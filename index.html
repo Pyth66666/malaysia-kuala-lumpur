@@ -69,6 +69,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ================= renderer =================
 const renderer = new THREE.WebGLRenderer({antialias:true});
+window.renderer = renderer;  // expose for debugging (renderer.info.render.calls)
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
@@ -123,10 +124,7 @@ function setNight(on){
   skyMat.uniforms.uNight.value = on ? 1.0 : 0.0;
   cloudGroup.visible = !on;
   winMats.forEach(m => { m.emissiveIntensity = on ? 1.4 : 0.0; });
-  streetLights.forEach(g => {
-    g.children.forEach(ch => { if (ch.material && ch.material.emissive) ch.material.emissiveIntensity = on ? 1.6 : 0; });
-  });
-  carMats.forEach(m => m.emissiveIntensity = on ? 0.8 : 0.0);
+  streetLights.forEach(l => { l.headOn.emissiveIntensity = on ? 1.6 : 0; });
   if (typeof headlightMat !== 'undefined'){
     headlightMat.emissiveIntensity = on ? 2.0 : 0.0;
     taillightMat.emissiveIntensity = on ? 1.5 : 0.0;
@@ -534,129 +532,168 @@ function buildTrees(){  // called after collision grid exists (scatterTrees need
   city.add(ti, ci);
 }
 
-// ================= traffic (detailed cars: body + cabin + wheels + lights) =================
-const carMats = [];
+// ================= traffic (instanced cars) =================
+// bake an array of [geometry, matrix4] into one BufferGeometry (transforms applied to vertices)
+function bake(parts){
+  const positions=[], normals=[], colors=[], uvs=[];
+  for (const {geo, m} of parts){
+    const g = geo.clone(); g.applyMatrix4(m);
+    const pos = g.getAttribute('position');
+    const nor = g.getAttribute('normal');
+    const col = g.getAttribute('color');
+    const uv = g.getAttribute('uv');
+    for (let i=0;i<pos.count;i++){
+      positions.push(pos.getX(i),pos.getY(i),pos.getZ(i));
+      normals.push(nor.getX(i),nor.getY(i),nor.getZ(i));
+      colors.push(col ? col.getX(i) : 1, col ? col.getY(i) : 1, col ? col.getZ(i) : 1);
+      uvs.push(uv ? uv.getX(i) : 0, uv ? uv.getY(i) : 0);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals,3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs,2));
+  return g;
+}
 const cars = [];
 const carParent = new THREE.Group(); carParent.name = 'Traffic';
 const MAX_CARS = 200;
 const carColors = [0xd8dade, 0x2c2f36, 0xb0b4bc, 0x8c1f28, 0x24405e, 0xc7a94e, 0x3a5f3a, 0x7c4a9e];
-const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.22, 10);
 const wheelMat = new THREE.MeshStandardMaterial({color:0x141416, roughness:0.9});
 const glassMat = new THREE.MeshStandardMaterial({color:0x9db8cc, roughness:0.1, metalness:0.8, envMap, envMapIntensity:1.2});
 const headlightMat = new THREE.MeshStandardMaterial({color:0xfff6d8, emissive:0xffeebb, emissiveIntensity:0});
 const taillightMat = new THREE.MeshStandardMaterial({color:0x55080a, emissive:0xff2a1a, emissiveIntensity:0});
 
-function makeCar(color){
-  const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({color, roughness:0.35, metalness:0.7, envMap, envMapIntensity:0.9});
-  carMats.push(bodyMat);
-  // main body: tapered lower + rounded cabin
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.65, 4.3), bodyMat);
-  body.position.y = 0.72; body.castShadow = true; g.add(body);
-  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 1.3), bodyMat);
-  hood.position.set(0, 1.08, -1.35); g.add(hood);
-  const trunk = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 1.1), bodyMat);
-  trunk.position.set(0, 1.08, 1.5); g.add(trunk);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.62, 2.2), bodyMat);
-  cabin.position.set(0, 1.55, 0.15); g.add(cabin);
-  // windshield + rear glass
-  const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 0.08), glassMat);
-  windshield.position.set(0, 1.5, -0.95); windshield.rotation.x = -0.45; g.add(windshield);
-  const rear = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.45, 0.08), glassMat);
-  rear.position.set(0, 1.52, 1.25); rear.rotation.x = 0.4; g.add(rear);
-  // wheels
-  for (const [wx, wz] of [[-0.85, -1.4], [0.85, -1.4], [-0.85, 1.4], [0.85, 1.4]]){
-    const w = new THREE.Mesh(wheelGeo, wheelMat);
-    w.rotation.z = Math.PI/2;
-    w.position.set(wx, 0.34, wz);
-    g.add(w);
-  }
-  // head & tail lights
-  for (const hx of [-0.6, 0.6]){
-    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.06), headlightMat);
-    hl.position.set(hx, 0.85, -2.16); g.add(hl);
-    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.06), taillightMat);
-    tl.position.set(hx, 0.9, 2.16); g.add(tl);
-  }
-  return g;
-}
+const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.22, 10);
+// merged body geometry: body+cabin+hood+trunk at local offsets (white base → per-instance paint)
+const carBodyGeo = bake([
+  {geo:new THREE.BoxGeometry(1.9, 0.65, 4.3), m:new THREE.Matrix4().makeTranslation(0, 0.72, 0)},
+  {geo:new THREE.BoxGeometry(1.8, 0.5, 1.3), m:new THREE.Matrix4().makeTranslation(0, 1.08, -1.35)},
+  {geo:new THREE.BoxGeometry(1.8, 0.5, 1.1), m:new THREE.Matrix4().makeTranslation(0, 1.08, 1.5)},
+  {geo:new THREE.BoxGeometry(1.7, 0.62, 2.2), m:new THREE.Matrix4().makeTranslation(0, 1.55, 0.15)},
+]);
+const bodyMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.35, metalness:0.7, envMap, envMapIntensity:0.9, vertexColors:true});
+carBodyGeo.deleteAttribute('color');  // per-instance paint via instanceColor only
+// merged glass (windshield+rear), wheels (4), headlights (2), taillights (2) at local offsets
+const glassGeo = bake([
+  {geo:new THREE.BoxGeometry(1.6, 0.5, 0.08), m:new THREE.Matrix4().compose(new THREE.Vector3(0,1.5,-0.95), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.45,0,0)), new THREE.Vector3(1,1,1))},
+  {geo:new THREE.BoxGeometry(1.6, 0.45, 0.08), m:new THREE.Matrix4().compose(new THREE.Vector3(0,1.52,1.25), new THREE.Quaternion().setFromEuler(new THREE.Euler(0.4,0,0)), new THREE.Vector3(1,1,1))},
+]);
+const wheelGeoB = bake([[-0.85,-1.4],[0.85,-1.4],[-0.85,1.4],[0.85,1.4]].map(([wx,wz]) =>
+  ({geo:wheelGeo, m:new THREE.Matrix4().compose(new THREE.Vector3(wx,0.34,wz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,Math.PI/2)), new THREE.Vector3(1,1,1))})));
+const hlGeo = bake([-0.6,0.6].map(hx => ({geo:new THREE.BoxGeometry(0.4, 0.15, 0.06), m:new THREE.Matrix4().makeTranslation(hx, 0.85, -2.16)})));
+const tlGeo = bake([-0.6,0.6].map(hx => ({geo:new THREE.BoxGeometry(0.42, 0.14, 0.06), m:new THREE.Matrix4().makeTranslation(hx, 0.9, 2.16)})));
+
+const bodyInst = new THREE.InstancedMesh(carBodyGeo, bodyMat, MAX_CARS);
+bodyInst.castShadow = true; bodyInst.receiveShadow = true;
+const glassInst = new THREE.InstancedMesh(glassGeo, glassMat, MAX_CARS);
+const wheelInst = new THREE.InstancedMesh(wheelGeoB, wheelMat, MAX_CARS);
+const hlInst = new THREE.InstancedMesh(hlGeo, headlightMat, MAX_CARS);
+const tlInst = new THREE.InstancedMesh(tlGeo, taillightMat, MAX_CARS);
+carParent.add(bodyInst, glassInst, wheelInst, hlInst, tlInst);
+city.add(carParent);
 
 const roadPaths = s.centers.map(pts => {
   const v = [];
-  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.22, -pts[i+1]));  // wheel bottoms (0.34-0.12) sit on road (y=0.1)
-  // cumulative lengths
-  const seg = []; let total = 0;
+  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.22, -pts[i+1]));  // wheel bottoms sit on road (y=0.1)
+  const seg = []; const cum = [0]; let total = 0;
   for (let i = 0; i < v.length-1; i++){
-    const L = v[i].distanceTo(v[i+1]); seg.push(L); total += L;
+    const L = v[i].distanceTo(v[i+1]); seg.push(L); total += L; cum.push(total);
   }
-  return {v, seg, total};
+  return {v, seg, cum, total};
 }).filter(p => p.total > 120);
+
+// sample a path at t (0..1) using binary search over cumulative lengths
+function posOnPath(path, t, out){
+  const d = ((t * path.total) % path.total + path.total) % path.total;
+  let lo = 0, hi = path.cum.length - 1;
+  while (lo < hi){
+    const mid = (lo + hi + 1) >> 1;
+    if (path.cum[mid] <= d) lo = mid; else hi = mid - 1;
+  }
+  const segIndex = lo;
+  const segLen = path.seg[segIndex];
+  const f = segLen > 0 ? (d - path.cum[segIndex]) / segLen : 0;
+  out.lerpVectors(path.v[segIndex], path.v[segIndex + 1], Math.min(1, Math.max(0, f)));
+  return out;
+}
 
 for (let i = 0; i < MAX_CARS && roadPaths.length; i++){
   const path = roadPaths[i % roadPaths.length];
-  const mesh = makeCar(carColors[i % carColors.length]);
   const dir = (i % 2) * 2 - 1; // both directions
   const offset = (i % 4 < 2 ? 3.5 : -3.5);
-  cars.push({mesh, path, t: Math.random(), speed: (16 + Math.random()*14) / Math.max(200, path.total), dir, offset});
-  carParent.add(mesh);
+  cars.push({path, t: Math.random(), speed: (16 + Math.random()*14) / Math.max(200, path.total), dir, offset, ci: i % carColors.length});
+  bodyInst.setColorAt(i, new THREE.Color(carColors[cars[i].ci]));
 }
-city.add(carParent);
-function posOnPath(path, t, out){
-  const d = t * path.total;
-  let acc = 0;
-  for (let i = 0; i < path.seg.length; i++){
-    if (acc + path.seg[i] >= d){
-      const f = (d - acc) / path.seg[i];
-      out.lerpVectors(path.v[i], path.v[i+1], f);
-      return out;
-    }
-    acc += path.seg[i];
-  }
-  out.copy(path.v[path.v.length-1]);
-  return out;
-}
-const _p = new THREE.Vector3(), _p2 = new THREE.Vector3();
+bodyInst.instanceColor.needsUpdate = true;
+
+const _p = new THREE.Vector3(), _p2 = new THREE.Vector3(), _M = new THREE.Matrix4();
 function updateCars(dt){
-  for (const c of cars){
+  for (let i = 0; i < cars.length; i++){
+    const c = cars[i];
     // left-hand traffic (Malaysia): dir=-1 drives reversed in the offset lane
-    let t = c.t, look = (c.t + 0.001) % 1, dirSign = 1;
+    let t = c.t, look = (c.t + 0.001) % 1;
     if (c.dir < 0){ t = 1 - t; look = (t - 0.001 + 1) % 1; }
     posOnPath(c.path, t, _p);
     posOnPath(c.path, look, _p2);
     const dx = _p2.x - _p.x, dz = _p2.z - _p.z;
     const L = Math.hypot(dx, dz) || 1;
-    // lane offset flips with travel direction so opposing traffic keeps left
     const lane = c.offset * (c.dir < 0 ? -1 : 1);
-    c.mesh.position.set(_p.x - dz/L*lane, _p.y, _p.z + dx/L*lane);
-    c.mesh.lookAt(_p2.x, _p2.y, _p2.z);
+    const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
+    const r = Math.atan2(-dx, -dz) + (c.dir < 0 ? Math.PI : 0);
+    _M.makeTranslation(x, 0.22, z); _M.rotateY(r);
+    bodyInst.setMatrixAt(i, _M);
+    glassInst.setMatrixAt(i, _M);
+    wheelInst.setMatrixAt(i, _M);
+    hlInst.setMatrixAt(i, _M);
+    tlInst.setMatrixAt(i, _M);
+    c.t = (c.t + c.speed * dt) % 1;
   }
+  bodyInst.instanceMatrix.needsUpdate = true;
+  glassInst.instanceMatrix.needsUpdate = true;
+  wheelInst.instanceMatrix.needsUpdate = true;
+  hlInst.instanceMatrix.needsUpdate = true;
+  tlInst.instanceMatrix.needsUpdate = true;
 }
 
-// ================= street lamps (3D: pole + arm + glowing head) =================
+// ================= street lamps (instanced: pole+arm merged, head separate) =================
 const streetLights = [];
 {
   const poleMat = new THREE.MeshStandardMaterial({color:0x4a4d52, roughness:0.6, metalness:0.6});
   const headOn  = new THREE.MeshStandardMaterial({color:0xfff2cc, emissive:0xffd9a0, emissiveIntensity:0});
+  const lampPts = [];  // {x, z, rot}
   let placed = 0;
   for (const path of roadPaths){
     if (placed >= 220) break;
     for (let i = 0; i < path.v.length; i += 3){
       if (placed >= 220) break;
       const p = path.v[i];
-      const g = new THREE.Group();
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 8.5, 8), poleMat);
-      pole.position.y = 4.25; pole.castShadow = true; g.add(pole);
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.14), poleMat);
-      arm.position.set(1.1, 8.4, 0); g.add(arm);
-      const head = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.3, 0.5), headOn);
-      head.position.set(2.1, 8.25, 0); g.add(head);
-      g.position.set(p.x, 0, p.z);
-      g.rotation.y = Math.random() * Math.PI * 2;
-      streetLights.push(g);
-      city.add(g);
+      lampPts.push({x:p.x, z:p.z, rot:Math.random()*Math.PI*2});
       placed++;
     }
   }
+  const LAMP = lampPts.length;
+  // merged pole+arm geometry at local offsets (pole base at origin)
+  const poleArmGeo = bake([
+    {geo:new THREE.CylinderGeometry(0.14, 0.18, 8.5, 8), m:new THREE.Matrix4().makeTranslation(0, 4.25, 0)},
+    {geo:new THREE.BoxGeometry(2.4, 0.14, 0.14), m:new THREE.Matrix4().makeTranslation(1.1, 8.4, 0)},
+  ]);
+  const headGeo = bake([{geo:new THREE.BoxGeometry(1.0, 0.3, 0.5), m:new THREE.Matrix4().makeTranslation(2.1, 8.25, 0)}]);
+  const poleInst = new THREE.InstancedMesh(poleArmGeo, poleMat, LAMP);
+  poleInst.castShadow = true;
+  const headInst = new THREE.InstancedMesh(headGeo, headOn, LAMP);
+  const _lM = new THREE.Matrix4();
+  for (let i = 0; i < LAMP; i++){
+    const lp = lampPts[i];
+    _lM.makeTranslation(lp.x, 0, lp.z).rotateY(lp.rot);
+    poleInst.setMatrixAt(i, _lM);
+    headInst.setMatrixAt(i, _lM);
+  }
+  poleInst.instanceMatrix.needsUpdate = true;
+  headInst.instanceMatrix.needsUpdate = true;
+  city.add(poleInst, headInst);
+  streetLights.push({poleInst, headInst, headOn});
 }
 
 // ================= railway tracks =================
@@ -777,24 +814,26 @@ if (s.stations && s.stations.length){
 
 // ================= buses (on major roads, longer than cars) =================
 const busGeo = new THREE.BoxGeometry(2.6, 2.9, 11.5);
-const busMats = [];
+const busMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.5, vertexColors:true});  // no body glow; per-instance paint
+const busInst = new THREE.InstancedMesh(busGeo, busMat, 30);
+busInst.castShadow = true; busInst.receiveShadow = true;
+carParent.add(busInst);
 const buses = [];
 {
   const busColors = [0xd7263d, 0x2e86de, 0xf0c419, 0xd7263d]; // RapidKL red/blue/yellow
   for (let i = 0; i < 30 && roadPaths.length; i++){
     const path = roadPaths[(i * 7) % roadPaths.length];
-    const mat = new THREE.MeshStandardMaterial({color: busColors[i % busColors.length], roughness:0.5});  // no body glow
-    busMats.push(mat);
-    const mesh = new THREE.Mesh(busGeo, mat);
-    mesh.castShadow = true;
     const dir = (i % 2) * 2 - 1;
     const offset = (i % 4 < 2 ? 4.2 : -4.2);
-    buses.push({mesh, path, t: Math.random(), speed: (11 + Math.random()*4) / Math.max(200, path.total), dir, offset});
-    carParent.add(mesh);
+    buses.push({path, t: Math.random(), speed: (11 + Math.random()*4) / Math.max(200, path.total), dir, offset, ci: i % busColors.length});
+    busInst.setColorAt(i, new THREE.Color(busColors[buses[i].ci]));
   }
+  busInst.instanceColor.needsUpdate = true;
 }
+const _bM = new THREE.Matrix4();
 function updateBuses(dt){
-  for (const b of buses){
+  for (let i = 0; i < buses.length; i++){
+    const b = buses[i];
     let t = b.t, look = (b.t + 0.001) % 1;
     if (b.dir < 0){ t = 1 - t; look = (t - 0.001 + 1) % 1; }
     posOnPath(b.path, t, _p);
@@ -802,9 +841,13 @@ function updateBuses(dt){
     const dx = _p2.x - _p.x, dz = _p2.z - _p.z;
     const L = Math.hypot(dx, dz) || 1;
     const lane = b.offset * (b.dir < 0 ? -1 : 1);
-    b.mesh.position.set(_p.x - dz/L*lane, _p.y + 1.33, _p.z + dx/L*lane);  // bus (2.9 tall, centered): bottom on road 0.1 => center 1.55 = path 0.22 + 1.33
-    b.mesh.lookAt(_p2.x, _p2.y, _p2.z);
+    const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
+    const r = Math.atan2(-dx, -dz) + (b.dir < 0 ? Math.PI : 0);
+    _bM.makeTranslation(x, 0.22 + 1.33, z); _bM.rotateY(r);
+    busInst.setMatrixAt(i, _bM);
+    b.t = (b.t + b.speed * dt) % 1;
   }
+  busInst.instanceMatrix.needsUpdate = true;
 }
 
 // ================= landmarks (real-world dimensions, 1 unit = 1 meter) =================
@@ -1062,50 +1105,63 @@ const cloudGroup = new THREE.Group(); cloudGroup.name = 'Clouds';
 }
 scene.add(cloudGroup);
 
-// ================= birds (flapping V-flocks) =================
-const birds = [];
-{
-  const birdMat = new THREE.MeshBasicMaterial({color: 0x1a1a1e, side: THREE.DoubleSide, fog: false});
-  for (let f = 0; f < 3; f++){
-    const flock = new THREE.Group();
-    const cx = (Math.random()-0.5)*2500, cz = (Math.random()-0.5)*2500;
-    const cy = 90 + Math.random()*130;
-    const n = 7 + Math.floor(Math.random()*8);
-    for (let i = 0; i < n; i++){
-      const bird = new THREE.Group();
-      const wingL = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.9), birdMat);
-      wingL.position.x = -1.2;
-      const wingR = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.9), birdMat);
-      wingR.position.x = 1.2;
-      bird.add(wingL, wingR);
-      bird.position.set(cx + (Math.random()-0.5)*130, cy + (Math.random()-0.5)*35, cz + (Math.random()-0.5)*130);
-      bird.userData = {wingL, wingR, phase: Math.random()*Math.PI*2};
-      flock.add(bird);
-      birds.push(bird);
-    }
-    flock.userData.center = new THREE.Vector3(cx, cy, cz);
-    flock.userData.angle = Math.random()*Math.PI*2;
-    flock.userData.radius = 300 + Math.random()*500;
-    flock.userData.speed = 0.02 + Math.random()*0.03;
-    flock.userData.flock = flock;
-    scene.add(flock);
-    birds.flocks = (birds.flocks || []).concat(flock);
+// ================= birds (instanced flocks, shared geometry) =================
+const birdMat = new THREE.MeshBasicMaterial({color:0x1a1a1e, side:THREE.DoubleSide, fog:false});
+const wingGeo = new THREE.PlaneGeometry(2.6, 0.9);
+const BIRDS_MAX = 200;
+const wingLInst = new THREE.InstancedMesh(wingGeo, birdMat, BIRDS_MAX);
+const wingRInst = new THREE.InstancedMesh(wingGeo, birdMat, BIRDS_MAX);
+scene.add(wingLInst, wingRInst);
+const birdData = [];
+const flocks = [];
+for (let f = 0; f < 3; f++){
+  const cx = (Math.random()-0.5)*2500, cz = (Math.random()-0.5)*2500;
+  const cy = 90 + Math.random()*130;
+  const n = 7 + Math.floor(Math.random()*8);
+  const flock = {center:new THREE.Vector3(cx, cy, cz), angle:Math.random()*Math.PI*2,
+                 radius:300+Math.random()*500, speed:0.02+Math.random()*0.03, birds:[]};
+  for (let i = 0; i < n; i++){
+    const idx = birdData.length;
+    birdData.push({x:cx + (Math.random()-0.5)*130, y:cy + (Math.random()-0.5)*35,
+                   z:cz + (Math.random()-0.5)*130, yaw:-flock.angle + Math.PI/2,
+                   phase:Math.random()*Math.PI*2});
+    flock.birds.push(idx);
   }
+  flocks.push(flock);
 }
+const _wlM = new THREE.Matrix4(), _wrM = new THREE.Matrix4();
+const _RY = new THREE.Matrix4(), _R = new THREE.Matrix4();
+const _Ta = new THREE.Matrix4(), _Tb = new THREE.Matrix4();
 function updateBirds(t, dt){
-  for (const fl of (birds.flocks || [])){
-    fl.userData.angle += fl.userData.speed * dt;
-    const c = fl.userData.center;
-    // circle the flock center; keep birds near their offsets
-    for (const b of fl.children){
-      b.position.x += Math.cos(fl.userData.angle) * 12 * dt;
-      b.position.z += Math.sin(fl.userData.angle) * 12 * dt;
-      const flap = Math.sin(t * 9 + b.userData.phase) * 0.7;
-      b.userData.wingL.rotation.y = flap;
-      b.userData.wingR.rotation.y = -flap;
-      b.rotation.y = -fl.userData.angle + Math.PI/2;
+  let count = 0;
+  for (const fl of flocks){
+    fl.angle += fl.speed * dt;
+    for (const idx of fl.birds){
+      const bd = birdData[idx];
+      bd.x += Math.cos(fl.angle) * 12 * dt;
+      bd.z += Math.sin(fl.angle) * 12 * dt;
+      bd.yaw = -fl.angle + Math.PI/2;
+      const flap = Math.sin(t * 9 + bd.phase) * 0.7;
+      // left wing at x=-1.2: T(pos)*RY(yaw)*T(-1.2)*RY(flap)*T(1.2)
+      _wlM.makeTranslation(bd.x, bd.y, bd.z);
+      _RY.makeRotationY(bd.yaw); _wlM.multiply(_RY);
+      _Ta.makeTranslation(-1.2, 0, 0); _wlM.multiply(_Ta);
+      _R.makeRotationY(flap); _wlM.multiply(_R);
+      _Tb.makeTranslation(1.2, 0, 0); _wlM.multiply(_Tb);
+      wingLInst.setMatrixAt(count, _wlM);
+      // right wing at x=+1.2, mirrored flap
+      _wrM.makeTranslation(bd.x, bd.y, bd.z);
+      _RY.makeRotationY(bd.yaw); _wrM.multiply(_RY);
+      _Ta.makeTranslation(1.2, 0, 0); _wrM.multiply(_Ta);
+      _R.makeRotationY(-flap); _wrM.multiply(_R);
+      _Tb.makeTranslation(-1.2, 0, 0); _wrM.multiply(_Tb);
+      wingRInst.setMatrixAt(count, _wrM);
+      count++;
     }
   }
+  wingLInst.count = count; wingRInst.count = count;
+  wingLInst.instanceMatrix.needsUpdate = true;
+  wingRInst.instanceMatrix.needsUpdate = true;
 }
 
 // ================= airplane (crossing flight + blinking lights) =================
@@ -1617,6 +1673,7 @@ function drawMinimap(){
   mg.fillStyle = '#cfd6e4'; mg.font = 'bold 12px system-ui';
   mg.fillText('N', nx - 4, ny + 4);
 }
+let _drawCallReported = false;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
@@ -1640,6 +1697,7 @@ renderer.setAnimationLoop(() => {
   updateSkyFollow();
   drawMinimap();
   renderer.render(scene, camera);
+  if (!_drawCallReported){ _drawCallReported = true; console.log('[kl3d] draw calls/frame:', renderer.info.render.calls); }
 });
 addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 </script>
