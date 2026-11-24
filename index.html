@@ -38,6 +38,7 @@ window.onerror = (msg, src, line) => {
 <script type="module">
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ================= renderer =================
 const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -233,17 +234,61 @@ function addUVsByHeight(geo){
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
 
-// split buildings into tall-glass vs short-warm by scanning vertex colors (blue-ish = glass)
-const tallIdx = [], shortIdx = [];
+// split buildings into wall tris (get facade UVs + texture) and roof tris (plain colour)
+const tallWalls = [], tallRoofs = [], shortWalls = [], shortRoofs = [];
 {
   const pos = s.buildings, col = s.buildings_c, triCount = col.length/9;
-  // classification per triangle: majority blue channel > red channel → glass
   for (let t = 0; t < triCount; t++){
-    const r = col[t*9], b = col[t*9+2];
-    (b >= r ? tallIdx : shortIdx).push(t);
+    const o = t*9;
+    const y0 = pos[o+1], y1 = pos[o+4], y2 = pos[o+7];
+    const isRoof = (y0 === y1 && y1 === y2 && y0 > 0.01);
+    const glass = col[o+2] >= col[o];   // blue-ish = glass
+    if (isRoof) (glass ? tallRoofs : shortRoofs).push(t);
+    else (glass ? tallWalls : shortWalls).push(t);
   }
 }
-function buildSubset(idxs, useTex){
+// walls: u measured along each wall edge (per-triangle), v = height. Windows tile every ~24 m x 18 floors.
+function buildWalls(idxs, tileW, tileH){
+  const n = idxs.length * 9;
+  const p = new Float32Array(n), c = new Float32Array(n), uv = new Float32Array(n/3*2);
+  let k = 0, ku = 0;
+  for (const t of idxs){
+    const o = t*9;
+    // wall corners: (x1,z1) bottom, (x2,z2) top edge — use tri verts directly
+    const vx = [s.buildings[o], s.buildings[o+3], s.buildings[o+6]];
+    const vy = [s.buildings[o+1], s.buildings[o+4], s.buildings[o+7]];
+    const vz = [s.buildings[o+2], s.buildings[o+5], s.buildings[o+8]];
+    // horizontal length of the wall = distance between the two distinct bottom/top xz points;
+    // for a wall tri, two verts share y=0 and one has y=h — find bottom edge length
+    let bi = [0,1,2].filter(i => vy[i] === Math.min(vy[0], vy[1], vy[2]));
+    let uLen = 0;
+    if (bi.length >= 2){
+      uLen = Math.hypot(vx[bi[1]]-vx[bi[0]], vz[bi[1]]-vz[bi[0]]);
+    } else {
+      uLen = Math.hypot(vx[1]-vx[0], vz[1]-vz[0]);
+    }
+    const h = Math.max(vy[0], vy[1], vy[2]);
+    // u runs 0..(len/tileW), v runs 0..(h/tileH)
+    const uvs = [];
+    for (let v = 0; v < 3; v++){
+      const isTop = vy[v] > 0.01 && Math.min(vy[0],vy[1],vy[2]) < 0.01;
+      const uCoord = isTop ? uLen/tileW : 0;
+      uvs.push([uCoord, vy[v]/tileH]);
+    }
+    for (let j = 0; j < 9; j++, k++){
+      p[k] = s.buildings[o+j];
+      c[k] = s.buildings_c[o+j];
+    }
+    for (let v = 0; v < 3; v++){ uv[ku++] = uvs[v][0]; uv[ku++] = uvs[v][1]; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.computeVertexNormals();
+  return g;
+}
+function buildRoofs(idxs){
   const n = idxs.length * 9;
   const p = new Float32Array(n), c = new Float32Array(n);
   let k = 0;
@@ -257,18 +302,25 @@ function buildSubset(idxs, useTex){
   g.setAttribute('position', new THREE.BufferAttribute(p, 3));
   g.setAttribute('color', new THREE.BufferAttribute(c, 3));
   g.computeVertexNormals();
-  if (useTex) addUVsByHeight(g);
   return g;
 }
-const tallGeo = buildSubset(tallIdx, true);
-const shortGeo = buildSubset(shortIdx, true);
+const tallGeo = buildWalls(tallWalls, 24, 3.2*18);
+const shortGeo = buildWalls(shortWalls, 12, 3.2*6);
+const tallRoofGeo = buildRoofs(tallRoofs);
+const shortRoofGeo = buildRoofs(shortRoofs);
 const tallMat = facadeFor(true, 60);   // glass texture scale
 const shortMat = facadeFor(false, 15); // warm texture scale
+// vertex colours carry the per-building palette → white tint to avoid double-darkening
+tallMat.color.set(0xffffff); tallMat.vertexColors = true;
+shortMat.color.set(0xffffff); shortMat.vertexColors = true;
+const roofMat = new THREE.MeshStandardMaterial({vertexColors: true, roughness: 0.9});  // plain roofs, no window texture
 const tallMesh = new THREE.Mesh(tallGeo, tallMat);
 const shortMesh = new THREE.Mesh(shortGeo, shortMat);
+const tallRoofMesh = new THREE.Mesh(tallRoofGeo, roofMat);
+const shortRoofMesh = new THREE.Mesh(shortRoofGeo, roofMat);
 tallMesh.castShadow = tallMesh.receiveShadow = true;
 shortMesh.castShadow = shortMesh.receiveShadow = true;
-city.add(tallMesh, shortMesh);
+city.add(tallMesh, shortMesh, tallRoofMesh, shortRoofMesh);
 
 // --- roads ---
 const roadGeo = new THREE.BufferGeometry();
@@ -286,7 +338,7 @@ roadGeo.computeVertexNormals();
   roadGeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
 asphaltTex.repeat.set(1, 1);
-const roadMesh = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({map: asphaltTex, roughness:0.9, metalness:0.0, side:THREE.DoubleSide}));
+const roadMesh = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({map: asphaltTex, vertexColors: true, color: 0xffffff, roughness:0.9, metalness:0.0, side:THREE.DoubleSide}));
 roadMesh.receiveShadow = true;
 city.add(roadMesh);
 
@@ -328,6 +380,31 @@ const greenMesh = new THREE.Mesh(greenGeo, new THREE.MeshStandardMaterial({map: 
 greenMesh.receiveShadow = true;
 city.add(greenMesh);
 
+// sidewalks / parking lots / school yards (light concrete, slightly raised)
+if (s.paved && s.paved.length){
+  const pavedGeo = new THREE.BufferGeometry();
+  pavedGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.paved), 3));
+  pavedGeo.computeVertexNormals();
+  const pavedMesh = new THREE.Mesh(pavedGeo, new THREE.MeshStandardMaterial({
+    color: 0xc9c5ba, roughness: 0.95, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1  // avoid z-fight with roads
+  }));
+  pavedMesh.receiveShadow = true;
+  city.add(pavedMesh);
+}
+// dirt / sand / bare ground
+if (s.bare && s.bare.length){
+  const bareGeo = new THREE.BufferGeometry();
+  bareGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.bare), 3));
+  bareGeo.computeVertexNormals();
+  const bareMesh = new THREE.Mesh(bareGeo, new THREE.MeshStandardMaterial({
+    color: 0xb59e6e, roughness: 1, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+  }));
+  bareMesh.receiveShadow = true;
+  city.add(bareMesh);
+}
+
 // ground
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
   new THREE.MeshStandardMaterial({color:0xb8b4a8, roughness:1}));
@@ -338,15 +415,30 @@ city.add(ground);
 // scatter 2500 trees inside green polygons' bounding areas (cheap: random over green tri bboxes)
 function scatterTrees(){
   const pos = s.green; if (!pos.length) return [];
-  const trees = [];
-  for (let i = 0; i < 22000 && trees.length < 2600; i++){
-    const t = Math.floor(Math.random() * (pos.length/9));
-    // random barycentric point in triangle t
+  const triCount = pos.length/9;
+  // cumulative area table → triangles picked proportional to area
+  const areas = new Float64Array(triCount);
+  let total = 0;
+  for (let t = 0; t < triCount; t++){
     const o = t*9;
+    const ax=pos[o],az=pos[o+2], bx=pos[o+3],bz=pos[o+5], cx=pos[o+6],cz=pos[o+8];
+    const a = Math.abs((bx-ax)*(cz-az) - (cx-ax)*(bz-az)) / 2;
+    total += a; areas[t] = total;
+  }
+  const trees = [];
+  for (let i = 0; i < 26000 && trees.length < 2600; i++){
+    // pick triangle by area
+    const pick = Math.random() * total;
+    let lo = 0, hi = triCount - 1;
+    while (lo < hi){ const mid = (lo+hi) >> 1; (areas[mid] < pick) ? lo = mid+1 : hi = mid; }
+    const o = lo*9;
     const ax=pos[o],ay=pos[o+1],az=pos[o+2], bx=pos[o+3],by=pos[o+4],bz=pos[o+5], cx=pos[o+6],cy=pos[o+7],cz=pos[o+8];
     let u = Math.random(), v = Math.random();
     if (u+v > 1){ u = 1-u; v = 1-v; }
-    trees.push([ax+u*(bx-ax)+v*(cx-ax), 0.05, az+u*(bz-az)+v*(cz-az)]);
+    const x = ax+u*(bx-ax)+v*(cx-ax), z = az+u*(bz-az)+v*(cz-az);
+    // skip trees inside buildings or on roads
+    if (typeof buildingHeightAt === 'function' && buildingHeightAt(x, z) > 0.5) continue;
+    trees.push([x, 0.05, z]);
   }
   return trees;
 }
@@ -354,29 +446,33 @@ const treePts = scatterTrees();
 if (treePts.length){
   const trunkGeo = new THREE.CylinderGeometry(0.22, 0.38, 3.2, 6);
   const trunkMat = new THREE.MeshStandardMaterial({color:0x5f4326, roughness:1});
-  // canopy: two stacked irregular spheres with per-tree color variation
-  const crownGeo = new THREE.IcosahedronGeometry(2.0, 1);
-  // distort canopy vertices for organic look
+  // canopy: merged icosahedron, displaced by position hash (no cracks), instance-coloured
+  let crownGeo = new THREE.IcosahedronGeometry(2.0, 1);
+  crownGeo = mergeVertices(crownGeo);  // weld shared vertices so displacement doesn't tear faces
   {
     const p = crownGeo.getAttribute('position');
     for (let i = 0; i < p.count; i++){
-      const n = 1 + (Math.sin(i*12.9898)*43758.5453 % 1) * 0.35;
-      p.setXYZ(i, p.getX(i)*n, p.getY(i)*n*0.8, p.getZ(i)*n);
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      // hash on position (stable across duplicated verts) → same displacement for shared corners
+      const h = Math.abs(Math.sin(x*12.9898 + y*78.233 + z*37.719) * 43758.5453 % 1);
+      const n = 1 + h * 0.35;
+      p.setXYZ(i, x*n, y*n*0.8, z*n);
     }
     crownGeo.computeVertexNormals();
   }
-  const crownMats = [0x2e7d3a, 0x3a9142, 0x276e31, 0x4a9e3f].map(c =>
-    new THREE.MeshStandardMaterial({color:c, roughness:0.95, flatShading:true}));
+  const crownBaseMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.95, flatShading:true});
   const ti = new THREE.InstancedMesh(trunkGeo, trunkMat, treePts.length);
-  const ci = new THREE.InstancedMesh(crownGeo, crownMats[0], treePts.length);
+  ti.castShadow = true;
+  const ci = new THREE.InstancedMesh(crownGeo, crownBaseMat, treePts.length);
   ci.castShadow = true;
   const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), S = new THREE.Vector3();
   const color = new THREE.Color();
+  const crownCols = [0x2e7d3a, 0x3a9142, 0x276e31, 0x4a9e3f];
   treePts.forEach((p, i) => {
     const sc = 0.8 + Math.random()*0.9;
     M.compose(V.set(p[0], p[1]+1.6*sc, p[2]), Q, S.set(sc, sc, sc)); ti.setMatrixAt(i, M);
     M.compose(V.set(p[0], p[1]+3.8*sc, p[2]), Q, S.set(sc, sc*1.1, sc)); ci.setMatrixAt(i, M);
-    ci.setColorAt(i, color.set(crownMats[i % crownMats.length].color));
+    ci.setColorAt(i, color.set(crownCols[i % crownCols.length]));
   });
   city.add(ti, ci);
 }
@@ -659,9 +755,21 @@ function updateBuses(dt){
 
 // Petronas Towers: 451.9 m tip. Islamic 8-point star plan = 2 nested squares rotated 45°.
 // Skybridge: DOUBLE-deck at 170 m (levels 41/42). Setbacks as floors rise.
+function landmarkFacade(isGlass, hMeters){
+  // clone the cached material so per-landmark texture repeat doesn't mutate the shared entry
+  const m = facadeFor(isGlass, hMeters).clone();
+  m.map = m.map.clone(); m.map.needsUpdate = true;
+  m.map.wrapS = m.map.wrapT = THREE.RepeatWrapping;
+  // cylinder UVs: u wraps circumference (~160 m), v wraps height once → scale for ~3.7 m floors
+  m.map.repeat.set(24, Math.max(2, Math.round(hMeters / 3.7)));
+  m.emissiveMap = m.emissiveMap.clone(); m.emissiveMap.needsUpdate = true;
+  m.emissiveMap.wrapS = m.emissiveMap.wrapT = THREE.RepeatWrapping;
+  m.emissiveMap.repeat.copy(m.map.repeat);
+  return m;
+}
 function petronas(){
   const g = new THREE.Group(); g.name = 'PetronasTowers';
-  const glassMat = facadeFor(true, 379);
+  const glassMat = landmarkFacade(true, 379);
   glassMat.color.set(0xaec4d8);
   glassMat.roughness = 0.08; glassMat.metalness = 0.95; glassMat.envMapIntensity = 1.8;
   const steelMat = new THREE.MeshStandardMaterial({color:0xd7dce2, roughness:0.25, metalness:0.85, envMap, envMapIntensity:1.2});
@@ -708,7 +816,7 @@ function petronas(){
 // Merdeka 118: 678.9 m. Faceted diamond-plan megatall, spire from ~554 m.
 function tower118(){
   const g = new THREE.Group(); g.name = 'Merdeka118';
-  const mat = facadeFor(true, 554);
+  const mat = landmarkFacade(true, 554);
   mat.color.set(0xcdd8e4);
   const spire = new THREE.MeshStandardMaterial({color:0xe8e8ea, roughness:0.3, metalness:0.6});
   // lower fan (podium levels): wider
