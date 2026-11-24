@@ -95,8 +95,19 @@ const hemi = new THREE.HemisphereLight(0xcfe4ff, 0x9a9a90, DAY.hemiI + 0.25); sc
 const sun = new THREE.DirectionalLight(0xfff1da, DAY.sunI);
 sun.position.set(-500, 1100, 350); sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, {left:-1600, right:1600, top:1600, bottom:-1600, far:4000});
+Object.assign(sun.shadow.camera, {left:-500, right:500, top:500, bottom:-500, far:4000});
+sun.shadow.camera.updateProjectionMatrix();
+// snap shadow camera to texel grid to avoid shimmer while following the player
+const SHADOW_TEXEL = 1000 / 2048;  // frustum width / map size
+function updateSunFollow(){
+  const px = Math.round(cam.position.x / SHADOW_TEXEL) * SHADOW_TEXEL;
+  const pz = Math.round(cam.position.z / SHADOW_TEXEL) * SHADOW_TEXEL;
+  sun.position.set(px - 500, 1100, pz + 350);
+  sun.target.position.set(px, 0, pz);
+  sun.target.updateMatrixWorld();
+}
 scene.add(sun);
+scene.add(sun.target);
 let night = false;
 const moonLight = new THREE.DirectionalLight(0x8ea4d4, 0.0);
 moonLight.position.set(600, 700, -500);
@@ -433,9 +444,28 @@ if (s.bare && s.bare.length){
 }
 
 // ground
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
+// ================= data bounds (computed from loaded geometry) =================
+const BOUNDS = (() => {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const arr of [s.buildings, s.roads]){
+    for (let i = 0; i < arr.length; i += 9){
+      for (let v = 0; v < 3; v++){
+        const x = arr[i+v*3], z = arr[i+v*3+2];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+    }
+  }
+  const M = 60; // margin
+  return {minX: minX-M, maxX: maxX+M, minZ: minZ-M, maxZ: maxZ+M,
+          get halfX(){ return (this.maxX - this.minX)/2; },
+          get halfZ(){ return (this.maxZ - this.minZ)/2; },
+          get cx(){ return (this.minX + this.maxX)/2; },
+          get cz(){ return (this.minZ + this.maxZ)/2; }};
+})();
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(BOUNDS.halfX*2 + 200, BOUNDS.halfZ*2 + 200),
   new THREE.MeshStandardMaterial({color:0xb8b4a8, roughness:1}));
-ground.rotation.x = -Math.PI/2; ground.position.y = -0.08; ground.receiveShadow = true;
+ground.rotation.x = -Math.PI/2; ground.position.set(BOUNDS.cx, -0.08, BOUNDS.cz); ground.receiveShadow = true;
 city.add(ground);
 
 // ================= trees (instanced) =================
@@ -1001,7 +1031,10 @@ const skyMat = new THREE.ShaderMaterial({
 const sky = new THREE.Mesh(skyGeo, skyMat);
 scene.add(sky);
 
-// ================= clouds (day, drifting) =================
+function updateSkyFollow(){
+  sky.position.set(cam.position.x, 0, cam.position.z);
+  cloudGroup.position.set(cam.position.x, 0, cam.position.z);
+}
 function cloudTexture(){
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const g = c.getContext('2d');
@@ -1324,28 +1357,50 @@ const GRAVITY = 9.81 * 2.2;   // slightly heavy = arcade feel
 const PLAYER_R = 0.45;        // body radius
 const EYE = 1.7;
 let vy = 0, onGround = true, groundY = 0;
-// collision grid: cell = 8 m, stores max building height per cell (walls) + ground
-const CGRID = 8, CGRID_HALF = 3200;
-const ccols = Math.ceil(2*CGRID_HALF / CGRID);
-const cgrid = new Float32Array(ccols * ccols); // building height per cell (0 = no building)
+// collision grid: rasterize building FOOTPRINTS (roof triangles filled into cells)
+// so walls of any length block along their full span and interiors are solid
+const CGRID = 3;  // 3 m cells
+const ccols = Math.ceil((BOUNDS.maxX - BOUNDS.minX) / CGRID);
+const crows = Math.ceil((BOUNDS.maxZ - BOUNDS.minZ) / CGRID);
+const cgrid = new Float32Array(ccols * crows); // building height per cell (0 = no building)
 {
   const pos = s.buildings;
+  const cellX = x => Math.floor((x - BOUNDS.minX) / CGRID);
+  const cellZ = z => Math.floor((z - BOUNDS.minZ) / CGRID);
   for (let i = 0; i < pos.length; i += 9){
-    for (let v = 0; v < 3; v++){
-      const x = pos[i + v*3], y = pos[i + v*3 + 1], z = pos[i + v*3 + 2];
-      if (y < 2) continue;  // skip ground vertices
-      const cx = Math.floor((x + CGRID_HALF) / CGRID);
-      const cz = Math.floor((z + CGRID_HALF) / CGRID);
-      if (cx < 0 || cz < 0 || cx >= ccols || cz >= ccols) continue;
-      const idx = cz * ccols + cx;
-      if (y > cgrid[idx]) cgrid[idx] = y;
+    const y0 = pos[i+1], y1 = pos[i+4], y2 = pos[i+7];
+    const isRoof = (y0 === y1 && y1 === y2 && y0 > 0.01);
+    if (!isRoof) continue;                    // only roof triangles = footprint at height h
+    const h = y0;
+    if (h < 2) continue;                      // ignore low slabs
+    // triangle in cell space, fill via edge-walking scanline
+    const ax = cellX(pos[i]), az = cellZ(pos[i+2]);
+    const bx = cellX(pos[i+3]), bz = cellZ(pos[i+5]);
+    const cx = cellX(pos[i+6]), cz = cellZ(pos[i+8]);
+    const minX = Math.max(0, Math.min(ax, bx, cx)), maxX = Math.min(ccols-1, Math.max(ax, bx, cx));
+    const minZ = Math.max(0, Math.min(az, bz, cz)), maxZ = Math.min(crows-1, Math.max(az, bz, cz));
+    if (maxX < minX || maxZ < minZ) continue;
+    const edge = (px, pz, x1, z1, x2, z2) => (px - x1) * (z2 - z1) - (pz - z1) * (x2 - x1);
+    for (let r = minZ; r <= maxZ; r++){
+      for (let c = minX; c <= maxX; c++){
+        // cell centre point-in-triangle (top-left rule approximation, inclusive)
+        const d1 = edge(c+0.5, r+0.5, ax, az, bx, bz);
+        const d2 = edge(c+0.5, r+0.5, bx, bz, cx, cz);
+        const d3 = edge(c+0.5, r+0.5, cx, cz, ax, az);
+        const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+        const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+        if (!(hasNeg && hasPos)){
+          const idx = r * ccols + c;
+          if (h > cgrid[idx]) cgrid[idx] = h;
+        }
+      }
     }
   }
 }
 function buildingHeightAt(x, z){
-  const cx = Math.floor((x + CGRID_HALF) / CGRID);
-  const cz = Math.floor((z + CGRID_HALF) / CGRID);
-  if (cx < 0 || cz < 0 || cx >= ccols || cz >= ccols) return 0;
+  const cx = Math.floor((x - BOUNDS.minX) / CGRID);
+  const cz = Math.floor((z - BOUNDS.minZ) / CGRID);
+  if (cx < 0 || cz < 0 || cx >= ccols || cz >= crows) return 0;
   return cgrid[cz * ccols + cx];
 }
 addEventListener('keydown', e => {
@@ -1404,8 +1459,8 @@ function move(dt, g = {mx:0, mz:0, my:0}){
     } else {
       onGround = false;
     }
-    cam.position.x = THREE.MathUtils.clamp(cam.position.x,-2600,2600);
-    cam.position.z = THREE.MathUtils.clamp(cam.position.z,-2600,2600);
+    cam.position.x = THREE.MathUtils.clamp(cam.position.x, BOUNDS.minX, BOUNDS.maxX);
+    cam.position.z = THREE.MathUtils.clamp(cam.position.z, BOUNDS.minZ, BOUNDS.maxZ);
   }
 }
 
@@ -1459,8 +1514,12 @@ function pollGamepad(dt){
 const mapC = document.createElement('canvas');
 mapC.width = mapC.height = 1024;  // baked city map
 // world→map scale: world spans ±3200 m → 1024 px
-const MAP_HALF = 3200;
-const w2m = (wx, wz) => [ (wx + MAP_HALF) / (2*MAP_HALF) * 1024, (wz + MAP_HALF) / (2*MAP_HALF) * 1024 ];
+// minimap scale from real data bounds (aspect preserved)
+const MAP_W = BOUNDS.maxX - BOUNDS.minX, MAP_H = BOUNDS.maxZ - BOUNDS.minZ;
+const MAP_SCALE = 1024 / Math.max(MAP_W, MAP_H);
+const MAP_OFFX = (1024 - MAP_W * MAP_SCALE) / 2;  // center smaller axis
+const MAP_OFFY = (1024 - MAP_H * MAP_SCALE) / 2;
+const w2m = (wx, wz) => [ (wx - BOUNDS.minX) * MAP_SCALE + MAP_OFFX, (wz - BOUNDS.minZ) * MAP_SCALE + MAP_OFFY ];
 {
   const g = mapC.getContext('2d');
   g.fillStyle = '#26262b'; g.fillRect(0, 0, 1024, 1024);           // ground
@@ -1520,17 +1579,17 @@ const mapBlips = [
 let mapBig = false;
 mini.onclick = () => { mapBig = !mapBig; mini.style.width = mapBig ? '440px' : '220px'; mini.style.height = mapBig ? '440px' : '220px'; };
 function drawMinimap(){
-  const view = mapBig ? 440 : 220;
-  const zoom = mapBig ? 1024/6400 : 1024/12800;  // px per meter * base scale
-  const px = (cam.position.x + MAP_HALF) / (2*MAP_HALF) * 1024;
-  const py = (cam.position.z + MAP_HALF) / (2*MAP_HALF) * 1024;
+  const zoom = mapBig ? 1024/3200 : 1024/6400;  // px per meter * base scale
+  const px = (cam.position.x - BOUNDS.minX) * MAP_SCALE + MAP_OFFX;
+  const py = (cam.position.z - BOUNDS.minZ) * MAP_SCALE + MAP_OFFY;
   // rotate map so player heading is up (GTA-style)
   mg.save();
   mg.clearRect(0, 0, mini.width, mini.height);
   mg.beginPath(); mg.arc(mini.width/2, mini.height/2, mini.width/2 - 2, 0, 7); mg.clip();
   mg.translate(mini.width/2, mini.height/2);
   mg.rotate(-yaw + Math.PI);   // heading-up
-  mg.scale(zoom/ (1024/(2*MAP_HALF)), zoom/ (1024/(2*MAP_HALF)));
+  const s2 = zoom / MAP_SCALE;
+  mg.scale(s2, s2);
   mg.translate(-px, -py);
   mg.drawImage(mapC, 0, 0);
   // landmark blips
@@ -1574,6 +1633,8 @@ renderer.setAnimationLoop(() => {
   updateCars(dt);
   updateBuses(dt);
   updateTrains(dt);
+  updateSunFollow();
+  updateSkyFollow();
   drawMinimap();
   renderer.render(scene, camera);
 });
