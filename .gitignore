@@ -1,2 +1,5 @@
 node_modules/
 *.pbf
+data/kl_scene.json
+data/kl_center.osm.json
+data/*.bin
