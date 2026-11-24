@@ -48,3 +48,9 @@ python pbf_to_scene.py
 ```
 Reload the browser. Greater KL (~15 km) works; expect a much larger JSON
 and slower load.
+
+## Credits
+
+Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the ODbL.
+
+Live demo: https://pyth66666.github.io/malaysia-kuala-lumpur/
