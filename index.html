@@ -499,8 +499,8 @@ function scatterTrees(){
   }
   return trees;
 }
-const treePts = scatterTrees();
-if (treePts.length){
+const treePts = [];  // filled later, after the collision grid exists (scatterTrees uses buildingHeightAt)
+function buildTrees(){  // called after collision grid exists (scatterTrees needs buildingHeightAt)
   const trunkGeo = new THREE.CylinderGeometry(0.22, 0.38, 3.2, 6);
   const trunkMat = new THREE.MeshStandardMaterial({color:0x5f4326, roughness:1});
   // canopy: merged icosahedron, displaced by position hash (no cracks), instance-coloured
@@ -1403,6 +1403,9 @@ function buildingHeightAt(x, z){
   if (cx < 0 || cz < 0 || cx >= ccols || cz >= crows) return 0;
   return cgrid[cz * ccols + cx];
 }
+// now that the collision grid exists, scatter + build trees
+treePts.push(...scatterTrees());
+buildTrees();
 addEventListener('keydown', e => {
   if (e.code === 'Space' && !fly && onGround){ vy = 7.5; onGround = false; }  // jump
 });
