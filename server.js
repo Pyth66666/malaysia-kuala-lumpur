@@ -6,6 +6,8 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 
 const ROOT = __dirname;
+// 127.0.0.1 by default; pass --lan (or PHONE=1) to allow phones on the same Wi-Fi
+const BIND = (process.argv.includes('--lan') || process.env.PHONE) ? '0.0.0.0' : '127.0.0.1';
 const PORT = 8787;
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',

@@ -2,15 +2,35 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Kuala Lumpur 3D — City Explorer</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#0b1020;font-family:system-ui,sans-serif}
   #hud{position:fixed;top:12px;left:12px;color:#fff;background:rgba(10,15,35,.72);padding:10px 14px;
        border-radius:10px;font-size:13px;line-height:1.6;pointer-events:none;backdrop-filter:blur(4px)}
   #hud b{color:#7fd3ff}
+  .uiPanel{color:#fff;background:rgba(10,15,35,.82);padding:10px 12px;border-radius:10px;
+       font-size:13px;backdrop-filter:blur(4px);border:1px solid rgba(90,130,200,.4)}
+  #mode{position:fixed;bottom:12px;left:12px}
   #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#7fd3ff;
            font-size:20px;background:#0b1020;transition:opacity .6s;z-index:10;pointer-events:none}
-  #mode{position:fixed;bottom:12px;left:12px;color:#fff;background:rgba(10,15,35,.72);padding:8px 12px;border-radius:8px;font-size:13px}
+  #topBtns{position:fixed;top:12px;right:12px;display:flex;gap:8px;z-index:7}
+  #topBtns button{background:rgba(10,15,35,.82);color:#dfeaff;border:1px solid rgba(90,130,200,.4);
+       border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;backdrop-filter:blur(4px)}
+  #teleport{position:fixed;top:58px;right:12px;max-height:calc(100vh - 300px);overflow-y:auto;z-index:5}
+  #joystick{position:fixed;left:24px;bottom:90px;width:120px;height:120px;border-radius:50%;
+       background:rgba(10,15,35,.5);border:2px solid rgba(120,160,220,.5);touch-action:none;z-index:6;display:none}
+  #joyKnob{position:absolute;left:38px;top:38px;width:44px;height:44px;border-radius:50%;
+       background:rgba(140,180,240,.7)}
+  #jumpBtn{position:fixed;right:26px;bottom:150px;width:74px;height:74px;border-radius:50%;
+       background:rgba(10,15,35,.6);color:#dfeaff;border:2px solid rgba(120,160,220,.5);
+       font-size:14px;font-weight:600;touch-action:none;z-index:6;display:none}
+  body.touch #joystick{display:block}
+  body.touch #jumpBtn{display:block}
+  @media (max-width: 700px){
+    #hud{font-size:11px;padding:8px 10px;max-width:60vw}
+    #mode{font-size:11px;padding:6px 9px}
+  }
 </style>
 </head>
 <body>
@@ -18,11 +38,18 @@
 <b>Drag mouse</b> or <b>gamepad right stick</b> = look 360° · WASD/left stick move<br>
 Space/C or triggers rise/sink · Shift or A sprint · F walk/fly · N day/night · G export GLB</div>
 <div id="mode">DAY · FLY</div>
-<div id="teleport" style="position:fixed;top:12px;right:12px;color:#fff;background:rgba(10,15,35,.82);
-     padding:10px 12px;border-radius:10px;font-size:13px;backdrop-filter:blur(4px);max-height:80vh;overflow-y:auto;z-index:5">
+<div id="topBtns">
+  <button id="btnTP">Places</button>
+  <button id="btnDay">Night</button>
+  <button id="btnMode">Walk</button>
+  <button id="btnMap">Map</button>
+</div>
+<div id="teleport" class="uiPanel" style="display:none">
   <b style="color:#7fd3ff">TELEPORT (T to hide)</b>
   <div id="tpList" style="display:flex;flex-direction:column;gap:4px;margin-top:8px"></div>
 </div>
+<div id="joystick"><div id="joyKnob"></div></div>
+<div id="jumpBtn">JUMP</div>
 <div id="loading">Loading Kuala Lumpur…</div>
 <script>
 window.onerror = (msg, src, line) => {
@@ -1108,6 +1135,69 @@ addEventListener('pointermove', e => {
   applyLook();
 });
 // touchpad two-finger swipe (wheel) = look around too
+
+// ================= touch / phone controls =================
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (isTouch) document.body.classList.add('touch');
+// joystick state feeds move() like gamepad axes
+const joy = {x: 0, y: 0, active: false};
+{
+  const zone = document.getElementById('joystick');
+  const knob = document.getElementById('joyKnob');
+  let jid = null;
+  zone.addEventListener('pointerdown', e => {
+    jid = e.pointerId; zone.setPointerCapture(jid); joy.active = true;
+    e.preventDefault();
+  });
+  zone.addEventListener('pointermove', e => {
+    if (e.pointerId !== jid) return;
+    const r = zone.getBoundingClientRect();
+    let dx = (e.clientX - (r.left + r.width/2)) / (r.width/2);
+    let dy = (e.clientY - (r.top + r.height/2)) / (r.height/2);
+    const L = Math.hypot(dx, dy);
+    if (L > 1){ dx /= L; dy /= L; }
+    joy.x = dx; joy.y = dy;
+    knob.style.left = (38 + dx*30) + 'px';
+    knob.style.top  = (38 + dy*30) + 'px';
+    e.preventDefault();
+  });
+  const end = e => {
+    if (e.pointerId !== jid) return;
+    jid = null; joy.active = false; joy.x = joy.y = 0;
+    knob.style.left = '38px'; knob.style.top = '38px';
+  };
+  zone.addEventListener('pointerup', end);
+  zone.addEventListener('pointercancel', end);
+}
+// jump / rise button
+let touchRise = false;
+{
+  const jb = document.getElementById('jumpBtn');
+  jb.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (!fly){ if (onGround){ vy = 7.5; onGround = false; } }
+    else touchRise = true;
+  });
+  jb.addEventListener('pointerup', () => touchRise = false);
+  jb.addEventListener('pointercancel', () => touchRise = false);
+}
+// top toggle buttons
+document.getElementById('btnTP').onclick = () => {
+  const tp = document.getElementById('teleport');
+  tp.style.display = tp.style.display === 'none' ? 'block' : 'none';
+};
+document.getElementById('btnDay').onclick = () => setNight(!night);
+document.getElementById('btnMode').onclick = () => {
+  fly = !fly;
+  if (!fly){
+    vy = 0; onGround = false;
+    const bh = buildingHeightAt(cam.position.x, cam.position.z);
+    if (bh > 2.2 && cam.position.y < bh + EYE){ cam.position.y = bh + EYE + 0.1; onGround = true; }
+  }
+  modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
+};
+document.getElementById('btnMap').onclick = () => mini.onclick();
+
 renderer.domElement.addEventListener('wheel', e => {
   if (e.shiftKey){ // Shift + two-finger scroll = look left/right
     yaw -= e.deltaY * 0.002;
@@ -1479,6 +1569,7 @@ renderer.setAnimationLoop(() => {
   updateAirplane(dt);
   arrowLook(dt);
   const g = pollGamepad(dt);
+  if (joy.active){ g.mx = joy.x; g.mz = joy.y; if (touchRise && fly) g.my = 1; }
   move(dt, g);
   updateCars(dt);
   updateBuses(dt);
