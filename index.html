@@ -9,7 +9,7 @@
        border-radius:10px;font-size:13px;line-height:1.6;pointer-events:none;backdrop-filter:blur(4px)}
   #hud b{color:#7fd3ff}
   #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#7fd3ff;
-           font-size:20px;background:#0b1020;transition:opacity .6s;z-index:10}
+           font-size:20px;background:#0b1020;transition:opacity .6s;z-index:10;pointer-events:none}
   #mode{position:fixed;bottom:12px;left:12px;color:#fff;background:rgba(10,15,35,.72);padding:8px 12px;border-radius:8px;font-size:13px}
 </style>
 </head>
@@ -88,7 +88,10 @@ function setNight(on){
     g.children.forEach(ch => { if (ch.material && ch.material.emissive) ch.material.emissiveIntensity = on ? 1.6 : 0; });
   });
   carMats.forEach(m => m.emissiveIntensity = on ? 0.8 : 0.0);
-  busMats.forEach(m => m.emissiveIntensity = on ? 0.8 : 0.0);
+  if (typeof headlightMat !== 'undefined'){
+    headlightMat.emissiveIntensity = on ? 2.0 : 0.0;
+    taillightMat.emissiveIntensity = on ? 1.5 : 0.0;
+  }
 }
 renderer.toneMappingExposure = DAY.expo;
 
@@ -300,8 +303,8 @@ for (const pts of s.centers){
       const t0 = k/n, t1 = Math.min(1, (k+0.6)/n);
       const ax1 = x1+dx*t0+nx, ay1 = y1+dy*t0+ny, bx1 = x1+dx*t1+nx, by1 = y1+dy*t1+ny;
       const ax2 = x1+dx*t0-nx, ay2 = y1+dy*t0-ny, bx2 = x1+dx*t1-nx, by2 = y1+dy*t1-ny;
-      markVerts.push(ax1, 0.5, -ay1, bx1, 0.5, -by1, bx2, 0.5, -by2);
-      markVerts.push(ax1, 0.5, -ay1, bx2, 0.5, -by2, ax2, 0.5, -ay2);
+      markVerts.push(ax1, 0.12, -ay1, bx1, 0.12, -by1, bx2, 0.12, -by2);
+      markVerts.push(ax1, 0.12, -ay1, bx2, 0.12, -by2, ax2, 0.12, -ay2);
     }
   }
 }
@@ -315,6 +318,7 @@ const waterGeo = new THREE.BufferGeometry();
 waterGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(s.water), 3));
 waterGeo.computeVertexNormals();
 const waterMesh = new THREE.Mesh(waterGeo, new THREE.MeshStandardMaterial({color:0x2e6ea8, roughness:0.12, metalness:0.6, side:THREE.DoubleSide}));
+waterMesh.position.y = 0.62;  // converter emits water at y=-0.6; lift above ground (-0.08)
 city.add(waterMesh);
 
 const greenGeo = new THREE.BufferGeometry();
@@ -426,7 +430,7 @@ function makeCar(color){
 
 const roadPaths = s.centers.map(pts => {
   const v = [];
-  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.9, -pts[i+1]));
+  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.22, -pts[i+1]));  // wheel bottoms (0.34-0.12) sit on road (y=0.1)
   // cumulative lengths
   const seg = []; let total = 0;
   for (let i = 0; i < v.length-1; i++){
@@ -461,14 +465,16 @@ function posOnPath(path, t, out){
 const _p = new THREE.Vector3(), _p2 = new THREE.Vector3();
 function updateCars(dt){
   for (const c of cars){
-    c.t = (c.t + c.speed * dt) % 1;
-    posOnPath(c.path, c.t, _p);
-    posOnPath(c.path, (c.t + 0.001) % 1, _p2);
-    _p.x += -(_p2.z - _p.z) * c.dir * 0 + c.offset * 0; // keep simple: drive on centerline offset perpendicular
-    // perpendicular offset
+    // left-hand traffic (Malaysia): dir=-1 drives reversed in the offset lane
+    let t = c.t, look = (c.t + 0.001) % 1, dirSign = 1;
+    if (c.dir < 0){ t = 1 - t; look = (t - 0.001 + 1) % 1; }
+    posOnPath(c.path, t, _p);
+    posOnPath(c.path, look, _p2);
     const dx = _p2.x - _p.x, dz = _p2.z - _p.z;
     const L = Math.hypot(dx, dz) || 1;
-    c.mesh.position.set(_p.x - dz/L*c.offset, _p.y, _p.z + dx/L*c.offset);
+    // lane offset flips with travel direction so opposing traffic keeps left
+    const lane = c.offset * (c.dir < 0 ? -1 : 1);
+    c.mesh.position.set(_p.x - dz/L*lane, _p.y, _p.z + dx/L*lane);
     c.mesh.lookAt(_p2.x, _p2.y, _p2.z);
   }
 }
@@ -562,7 +568,7 @@ for (let i = 0; i < Math.min(8, trainPaths.length); i++){
   const cars = 4;
   for (let c = 0; c < cars; c++){
     const body = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.4, 18), c === 0 ? trainFrontMat : trainBodyMat);
-    body.position.set(0, 2.2, c * 19);
+    body.position.set(0, 0.32 + 1.7, c * 19);  // body bottom on rail top (0.32)
     body.castShadow = true;
     g.add(body);
   }
@@ -624,7 +630,7 @@ const buses = [];
   const busColors = [0xd7263d, 0x2e86de, 0xf0c419, 0xd7263d]; // RapidKL red/blue/yellow
   for (let i = 0; i < 30 && roadPaths.length; i++){
     const path = roadPaths[(i * 7) % roadPaths.length];
-    const mat = new THREE.MeshStandardMaterial({color: busColors[i % busColors.length], roughness:0.5, emissive:0xffeecc, emissiveIntensity:0});
+    const mat = new THREE.MeshStandardMaterial({color: busColors[i % busColors.length], roughness:0.5});  // no body glow
     busMats.push(mat);
     const mesh = new THREE.Mesh(busGeo, mat);
     mesh.castShadow = true;
@@ -636,12 +642,14 @@ const buses = [];
 }
 function updateBuses(dt){
   for (const b of buses){
-    b.t = (b.t + b.speed * dt) % 1;
-    posOnPath(b.path, b.t, _p);
-    posOnPath(b.path, (b.t + 0.001) % 1, _p2);
+    let t = b.t, look = (b.t + 0.001) % 1;
+    if (b.dir < 0){ t = 1 - t; look = (t - 0.001 + 1) % 1; }
+    posOnPath(b.path, t, _p);
+    posOnPath(b.path, look, _p2);
     const dx = _p2.x - _p.x, dz = _p2.z - _p.z;
     const L = Math.hypot(dx, dz) || 1;
-    b.mesh.position.set(_p.x - dz/L*b.offset, _p.y + 0.8, _p.z + dx/L*b.offset);
+    const lane = b.offset * (b.dir < 0 ? -1 : 1);
+    b.mesh.position.set(_p.x - dz/L*lane, _p.y + 1.33, _p.z + dx/L*lane);  // bus (2.9 tall, centered): bottom on road 0.1 => center 1.55 = path 0.22 + 1.33
     b.mesh.lookAt(_p2.x, _p2.y, _p2.z);
   }
 }
@@ -808,6 +816,7 @@ function sultanAbdulSamad(){
 city.add(petronas(), tower118(), klTower(), sultanAbdulSamad());
 scene.add(city);
 document.getElementById('loading').style.opacity = 0;
+setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 700);
 
 // ================= sky dome: gradient + sun disc + moon + stars =================
 const skyGeo = new THREE.SphereGeometry(9000, 32, 24);
@@ -1034,6 +1043,14 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyG') exportGLB();
 });
 addEventListener('keyup', e => keys[e.code] = false);
+// don't let a focused UI button swallow Space/Enter for the canvas; clear keys on focus loss
+addEventListener('keydown', e => {
+  if ((e.code === 'Space' || e.code === 'Enter') && e.target instanceof HTMLButtonElement){
+    e.preventDefault();
+  }
+});
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+document.addEventListener('visibilitychange', () => { if (document.hidden){ for (const k in keys) keys[k] = false; } });
 const clock = new THREE.Clock();
 const _dir = new THREE.Vector3();
 
@@ -1083,7 +1100,7 @@ function teleportTo(spot){
     b.style.cssText = 'background:#1a2f55;color:#dfeaff;border:1px solid #3a5f9e;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;text-align:left';
     b.onmouseenter = () => b.style.background = '#2a4f8f';
     b.onmouseleave = () => b.style.background = '#1a2f55';
-    b.onclick = () => teleportTo(spot);
+    b.onclick = () => { teleportTo(spot); b.blur(); };
     list.appendChild(b);
   }
 }
@@ -1138,7 +1155,7 @@ addEventListener('keydown', e => {
 });
 
 function move(dt, g = {mx:0, mz:0, my:0}){
-  const sprint = keys.ShiftLeft || gpSprint;
+  const sprint = keys.ShiftLeft || keys.ShiftRight || gpSprint;
   const speed = (fly ? baseSpeed : (sprint ? 9.5 : 4.2));  // real human speeds: 4.2 walk / 9.5 run
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
