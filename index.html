@@ -25,6 +25,17 @@
   #jumpBtn{position:fixed;right:26px;bottom:150px;width:74px;height:74px;border-radius:50%;
        background:rgba(10,15,35,.6);color:#dfeaff;border:2px solid rgba(120,160,220,.5);
        font-size:14px;font-weight:600;touch-action:none;z-index:6;display:none}
+  #hud.min{display:none}
+  #crosshair{position:fixed;left:50%;top:50%;width:14px;height:14px;transform:translate(-50%,-50%);
+       pointer-events:none;z-index:5;display:none}
+  #crosshair::before,#crosshair::after{content:'';position:absolute;background:rgba(255,255,255,.85);
+       box-shadow:0 0 3px rgba(0,0,0,.9)}
+  #crosshair::before{left:50%;top:0;width:2px;height:100%;transform:translateX(-50%)}
+  #crosshair::after{top:50%;left:0;height:2px;width:100%;transform:translateY(-50%)}
+  #toast{position:fixed;left:50%;bottom:96px;transform:translate(-50%,8px);background:rgba(10,20,40,.92);
+       color:#dfeaff;border:1px solid rgba(90,130,200,.6);border-radius:999px;padding:8px 16px;font-size:13px;
+       z-index:20;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;max-width:80vw;text-align:center}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
   body.touch #joystick{display:block}
   body.touch #jumpBtn{display:block}
   @media (max-width: 700px){
@@ -34,23 +45,26 @@
 </style>
 </head>
 <body>
-<div id="hud"><b>KUALA LUMPUR 3D — 1:1 scale</b><br>
+<div id="hud" role="note"><b>KUALA LUMPUR 3D — 1:1 scale</b><br>
 <b>Drag mouse</b> or <b>gamepad right stick</b> = look 360° · WASD/left stick move<br>
-Space/C or triggers rise/sink · Shift or A sprint · F walk/fly · N day/night · G export GLB</div>
-<div id="mode">DAY · FLY</div>
+Space/C or triggers rise/sink · Shift or A sprint · F walk/fly · N day/night · G export GLB<br>
+T places · 1–0,-,= teleport · H hide HUD</div>
+<div id="mode" role="status" aria-live="polite">DAY · FLY</div>
 <div id="topBtns">
-  <button id="btnTP">Places</button>
-  <button id="btnDay">Night</button>
-  <button id="btnMode">Walk</button>
-  <button id="btnMap">Map</button>
+  <button id="btnTP" aria-label="Open teleport places menu">Places</button>
+  <button id="btnDay" aria-label="Toggle day and night">Night</button>
+  <button id="btnMode" aria-label="Toggle walk and fly mode">Walk</button>
+  <button id="btnMap" aria-label="Enlarge or shrink minimap">Map</button>
 </div>
-<div id="teleport" class="uiPanel" style="display:none">
+<div id="teleport" class="uiPanel" role="dialog" aria-label="Teleport places" style="display:none">
   <b style="color:#7fd3ff">TELEPORT (T to hide)</b>
   <div id="tpList" style="display:flex;flex-direction:column;gap:4px;margin-top:8px"></div>
 </div>
-<div id="joystick"><div id="joyKnob"></div></div>
-<div id="jumpBtn">JUMP</div>
-<div id="loading">Loading Kuala Lumpur…</div>
+<div id="joystick" role="group" aria-label="Movement joystick"><div id="joyKnob"></div></div>
+<div id="jumpBtn" role="button" aria-label="Jump or rise">JUMP</div>
+<div id="crosshair" aria-hidden="true"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="loading" role="status" aria-live="polite">Loading Kuala Lumpur…</div>
 <script>
 window.onerror = (msg, src, line) => {
   const el = document.getElementById('loading');
@@ -131,6 +145,7 @@ function setNight(on){
     headlightMat.emissiveIntensity = on ? 2.0 : 0.0;
     taillightMat.emissiveIntensity = on ? 1.5 : 0.0;
   }
+  updateModeEl();
 }
 renderer.toneMappingExposure = DAY.expo;
 
@@ -795,37 +810,24 @@ const trainFrontMat = new THREE.MeshStandardMaterial({color:0x1d4f8f, roughness:
 for (let i = 0; i < Math.min(8, trainPaths.length); i++){
   const v = trainPaths[i];
   const g = new THREE.Group(); g.name = 'Train' + i;
-  const cars = 4;
-  for (let c = 0; c < cars; c++){
+  const wagonCount = 4;
+  for (let c = 0; c < wagonCount; c++){
     const body = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.4, 18), c === 0 ? trainFrontMat : trainBodyMat);
     body.position.set(0, 0.32 + 1.7, c * 19);  // body bottom on rail top (0.32)
     body.castShadow = true;
     g.add(body);
   }
-  const path = {v, seg: [], total: 0};
-  for (let k = 0; k < v.length-1; k++){ const L = v[k].distanceTo(v[k+1]); path.seg.push(L); path.total += L; }
+  const path = {v, seg: [], cum: [0], total: 0};
+  for (let k = 0; k < v.length-1; k++){ const L = v[k].distanceTo(v[k+1]); path.seg.push(L); path.total += L; path.cum.push(path.total); }
   trains.push({g, path, t: i * 0.13 % 1, speed: 14 / path.total, dir: i % 2 ? 1 : -1});
   city.add(g);
 }
 const _tp = new THREE.Vector3(), _tp2 = new THREE.Vector3();
-function posOnPolyline(v, seg, total, t, out){
-  const d = t * total;
-  let acc = 0;
-  for (let i = 0; i < seg.length; i++){
-    if (acc + seg[i] >= d){
-      out.lerpVectors(v[i], v[i+1], (d-acc)/seg[i]);
-      return out;
-    }
-    acc += seg[i];
-  }
-  out.copy(v[v.length-1]);
-  return out;
-}
 function updateTrains(dt){
   for (const tr of trains){
     tr.t = (tr.t + tr.speed * dt) % 1;
-    posOnPolyline(tr.path.v, tr.path.seg, tr.path.total, tr.t, _tp);
-    posOnPolyline(tr.path.v, tr.path.seg, tr.path.total, (tr.t + 0.002) % 1, _tp2);
+    posOnPath(tr.path, tr.t, _tp);
+    posOnPath(tr.path, (tr.t + 0.002) % 1, _tp2);
     tr.g.position.copy(_tp);
     tr.g.lookAt(_tp2);
   }
@@ -920,12 +922,12 @@ function petronas(){
       {r1: 19, r2: 21, h: 130, y0: 140},      // mid
       {r1: 14, r2: 17, h: 119, y0: 270},      // top (to 389? roof ~379)
     ];
-    for (const s of sections){
+    for (const sec of sections){
       // 8-point star = two square prisms rotated 45°
       for (const rot of [0, Math.PI/4]){
-        const prism = new THREE.Mesh(new THREE.CylinderGeometry(s.r2*0.75, s.r2*0.8, s.h, 4), glassMat);
+        const prism = new THREE.Mesh(new THREE.CylinderGeometry(sec.r2*0.75, sec.r2*0.8, sec.h, 4), glassMat);
         prism.rotation.y = rot + Math.PI/4;
-        prism.position.set(dx, s.y0 + s.h/2, 0);
+        prism.position.set(dx, sec.y0 + sec.h/2, 0);
         prism.castShadow = true;
         g.add(prism);
       }
@@ -1316,15 +1318,7 @@ document.getElementById('btnTP').onclick = () => {
   tp.style.display = tp.style.display === 'none' ? 'block' : 'none';
 };
 document.getElementById('btnDay').onclick = () => setNight(!night);
-document.getElementById('btnMode').onclick = () => {
-  fly = !fly;
-  if (!fly){
-    vy = 0; onGround = false;
-    const bh = buildingHeightAt(cam.position.x, cam.position.z);
-    if (bh > 2.2 && cam.position.y < bh + EYE){ cam.position.y = bh + EYE + 0.1; onGround = true; }
-  }
-  modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
-};
+document.getElementById('btnMode').onclick = () => setFly(!fly);
 document.getElementById('btnMap').onclick = () => mini.onclick();
 
 renderer.domElement.addEventListener('wheel', e => {
@@ -1348,26 +1342,41 @@ function arrowLook(dt){
 
 let fly = true, baseSpeed = 90;
 const modeEl = document.getElementById('mode');
+const crosshairEl = document.getElementById('crosshair');
+function updateModeEl(){
+  modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
+  if (crosshairEl) crosshairEl.style.display = fly ? 'none' : 'block';
+}
+let toastTimer;
+function toast(msg, ms = 2200){
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+function setFly(on){
+  fly = on;
+  if (!fly){
+    // enter walk mode: gravity takes over from current height
+    vy = 0; onGround = false;
+    // if toggled while inside a building volume, hop up so collision doesn't trap us
+    const bh = buildingHeightAt(cam.position.x, cam.position.z);
+    if (bh > 2.2 && cam.position.y < bh + EYE){
+      cam.position.y = bh + EYE + 0.1;
+      onGround = true;
+    }
+  }
+  updateModeEl();
+}
 const keys = {};
 addEventListener('keydown', e => {
   keys[e.code] = true;
-  if (e.code === 'KeyF'){
-    fly = !fly;
-    if (!fly){
-      // enter walk mode: disable fly, gravity takes over from current height
-      vy = 0; onGround = false;
-      // if toggled while inside a building volume, hop up so collision doesn't trap us
-      const bh = buildingHeightAt(cam.position.x, cam.position.z);
-      if (bh > 2.2 && cam.position.y < bh + EYE){
-        // inside a building: eject upward to roof and walk there
-        cam.position.y = bh + EYE + 0.1;
-        onGround = true;
-      }
-    }
-    modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
-  }
-  if (e.code === 'KeyN'){ setNight(!night); modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK'); }
+  if (e.code === 'KeyF') setFly(!fly);
+  if (e.code === 'KeyN') setNight(!night);
   if (e.code === 'KeyG') exportGLB();
+  if (e.code === 'KeyH') document.getElementById('hud').classList.toggle('min');
 });
 addEventListener('keyup', e => keys[e.code] = false);
 // don't let a focused UI button swallow Space/Enter for the canvas; clear keys on focus loss
@@ -1413,10 +1422,9 @@ function teleportTo(spot){
   cam.position.set(sx, spot.pos[1], sz);
   yaw = spot.yaw; pitch = 0;
   vy = 0; onGround = true; groundY = 0.15;
-  if (spot.walk && fly){ fly = false; }
-  if (!spot.walk && !fly){ fly = true; }
+  if (fly === spot.walk) setFly(!spot.walk);
   if (!fly) cam.position.y = EYE;
-  modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
+  toast('Teleport: ' + spot.name);
   applyLook();
 }
 {
@@ -1441,8 +1449,6 @@ addEventListener('keydown', e => {
                   Digit7:6, Digit8:7, Digit9:8, Digit0:9, Minus:10, Equal:11};
   if (keyMap[e.code] !== undefined && teleportSpots[keyMap[e.code]]){
     teleportTo(teleportSpots[keyMap[e.code]]);
-    modeEl.textContent = 'TP: ' + teleportSpots[keyMap[e.code]].name;
-    setTimeout(() => { modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK'); }, 1500);
   }
 });
 
@@ -1564,12 +1570,13 @@ function move(dt, g = {mx:0, mz:0, my:0}){
 }
 
 async function exportGLB(){
+  toast('Exporting GLB… this can take a few seconds', 60000);
   const exporter = new GLTFExporter();
   const glb = await exporter.parseAsync(city, {binary:true});
   const blob = new Blob([glb], {type:'model/gltf-binary'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = 'kuala_lumpur_center.glb'; a.click();
-  modeEl.textContent = 'GLB exported — Blender: File > Import > glTF';
+  toast('GLB exported — Blender: File > Import > glTF', 4000);
 }
 
 // ================= gamepad support =================
@@ -1591,17 +1598,9 @@ function pollGamepad(dt){
   }
   // buttons
   gpSprint = gp.buttons[0] && gp.buttons[0].pressed;             // A = sprint
-  if (gp.buttons[3] && gp.buttons[3].pressed && !gp._y){ setNight(!night); modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK'); }
+  if (gp.buttons[3] && gp.buttons[3].pressed && !gp._y){ setNight(!night); }
   gp._y = gp.buttons[3] && gp.buttons[3].pressed;
-  if (gp.buttons[2] && gp.buttons[2].pressed && !gp._x){
-    fly = !fly;
-    if (!fly){
-      vy = 0; onGround = false;
-      const bh = buildingHeightAt(cam.position.x, cam.position.z);
-      if (bh > 2.2 && cam.position.y < bh + EYE){ cam.position.y = bh + EYE + 0.1; onGround = true; }
-    }
-    modeEl.textContent = (night?'NIGHT ':'DAY ') + (fly?'· FLY':'· WALK');
-  }
+  if (gp.buttons[2] && gp.buttons[2].pressed && !gp._x){ setFly(!fly); }
   gp._x = gp.buttons[2] && gp.buttons[2].pressed;
   // triggers: rise / sink
   const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
@@ -1663,10 +1662,11 @@ const w2m = (wx, wz) => [ (wx - BOUNDS.minX) * MAP_SCALE + MAP_OFFX, (wz - BOUND
     g.closePath(); g.fill();
   }
 }
-// live minimap canvas in bottom-left
+// live minimap canvas in bottom-right (2x backing for crisp HiDPI)
 const mini = document.createElement('canvas');
-mini.width = mini.height = 220;
 mini.style.cssText = 'position:fixed;bottom:12px;right:12px;border-radius:12px;border:2px solid #3a5f9e;z-index:6;background:#111';
+mini.setAttribute('aria-label', 'Minimap — click to enlarge or shrink');
+mini.title = 'Click to enlarge';
 document.body.appendChild(mini);
 const mg = mini.getContext('2d');
 const mapBlips = [
@@ -1676,7 +1676,13 @@ const mapBlips = [
   {name:'SAS', x:-2079, z:1106, c:'#7fe08f'},
 ];
 let mapBig = false;
-mini.onclick = () => { mapBig = !mapBig; mini.style.width = mapBig ? '440px' : '220px'; mini.style.height = mapBig ? '440px' : '220px'; };
+function sizeMini(){
+  const css = mapBig ? 440 : 220;
+  mini.style.width = mini.style.height = css + 'px';
+  mini.width = mini.height = css * 2;
+}
+mini.onclick = () => { mapBig = !mapBig; sizeMini(); };
+sizeMini();
 function drawMinimap(){
   const zoom = mapBig ? 1024/3200 : 1024/6400;  // px per meter * base scale
   const px = (cam.position.x - BOUNDS.minX) * MAP_SCALE + MAP_OFFX;
