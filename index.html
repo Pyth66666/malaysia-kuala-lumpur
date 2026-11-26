@@ -55,7 +55,9 @@ Space/C or triggers rise/sink · Shift or A sprint · F walk/fly · N day/night 
 window.onerror = (msg, src, line) => {
   const el = document.getElementById('loading');
   el.style.opacity = 1; el.style.color = '#ff7b7b';
-  el.textContent = 'ERROR: ' + msg + ' @' + (src||'').split('/').pop() + ':' + line;
+  el.innerHTML = 'ERROR: ' + msg + ' @' + (src||'').split('/').pop() + ':' + line
+    + '<br><button id="btnRetry" style="margin-top:8px;padding:6px 12px">Retry</button>';
+  document.getElementById('btnRetry').onclick = () => location.reload();
 };
 </script>
 <script type="importmap">
@@ -250,8 +252,46 @@ function facadeFor(isGlass, h){
 }
 
 // ================= load city =================
-const res = await fetch('./data/kl_scene.json');
-const s = await res.json();
+async function loadScene(){
+  const loading = document.getElementById('loading');
+  function setProgress(pct, msg){
+    loading.textContent = msg || `Loading Kuala Lumpur… ${pct}%`;
+  }
+  setProgress(0);
+  try {
+    const metaRes = await fetch('./data/kl_scene_meta.json');
+    if (!metaRes.ok) throw new Error('scene binary meta not found');
+    const meta = await metaRes.json();
+    const binRes = await fetch('./data/kl_scene.bin');
+    if (!binRes.ok) throw new Error('scene binary not found');
+    const total = parseInt(binRes.headers.get('Content-Length') || '0', 10);
+    const reader = binRes.body.getReader();
+    const chunks = []; let loaded = 0;
+    while (true){
+      const {done, value} = await reader.read();
+      if (done) break;
+      chunks.push(value); loaded += value.byteLength;
+      if (total) setProgress(Math.round(loaded / total * 100));
+    }
+    const buf = new Uint8Array(loaded); let pos = 0;
+    for (const c of chunks){ buf.set(c, pos); pos += c.byteLength; }
+    const buffer = buf.buffer;
+    const s = {};
+    for (const k of ['centers','rails','stations']){
+      s[k] = (meta.polylines && meta.polylines[k]) || [];
+    }
+    for (const [key, info] of Object.entries(meta.arrays || {})){
+      s[key] = new Float32Array(buffer, info.byteOffset, info.byteLength / 4);
+    }
+    return s;
+  } catch (err){
+    // fall back to legacy JSON
+    const res = await fetch('./data/kl_scene.json');
+    if (!res.ok) throw err;
+    return await res.json();
+  }
+}
+const s = await loadScene();
 const city = new THREE.Group(); city.name = 'KualaLumpur';
 
 // --- buildings: per-triangle color buffer groups tall/short via heuristic ---
@@ -642,7 +682,7 @@ function updateCars(dt){
     const lane = c.offset * (c.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (c.dir < 0 ? Math.PI : 0);
-    _M.makeTranslation(x, 0.22, z); _M.rotateY(r);
+    _M.makeRotationY(r); _M.setPosition(x, 0.22, z);
     bodyInst.setMatrixAt(i, _M);
     glassInst.setMatrixAt(i, _M);
     wheelInst.setMatrixAt(i, _M);
@@ -686,7 +726,7 @@ const streetLights = [];
   const _lM = new THREE.Matrix4();
   for (let i = 0; i < LAMP; i++){
     const lp = lampPts[i];
-    _lM.makeTranslation(lp.x, 0, lp.z).rotateY(lp.rot);
+    _lM.makeRotationY(lp.rot); _lM.setPosition(lp.x, 0, lp.z);
     poleInst.setMatrixAt(i, _lM);
     headInst.setMatrixAt(i, _lM);
   }
@@ -843,7 +883,7 @@ function updateBuses(dt){
     const lane = b.offset * (b.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (b.dir < 0 ? Math.PI : 0);
-    _bM.makeTranslation(x, 0.22 + 1.33, z); _bM.rotateY(r);
+    _bM.makeRotationY(r); _bM.setPosition(x, 0.22 + 1.33, z);
     busInst.setMatrixAt(i, _bM);
     b.t = (b.t + b.speed * dt) % 1;
   }

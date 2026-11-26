@@ -3,3 +3,4 @@ node_modules/
 data/kl_scene.json
 data/kl_center.osm.json
 data/*.bin
+data/kl_scene_meta.json
