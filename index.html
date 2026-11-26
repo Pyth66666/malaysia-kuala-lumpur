@@ -327,7 +327,9 @@ async function loadScene(){
     const meta = await metaRes.json();
     const binRes = await fetch('./data/kl_scene.bin');
     if (!binRes.ok) throw new Error('scene binary not found');
-    const total = parseInt(binRes.headers.get('Content-Length') || '0', 10);
+    // uncompressed size from the meta (Content-Length is the gzip size when the host compresses)
+    const total = Math.max(0, ...Object.values(meta.arrays || {}).map(a => a.byteOffset + a.byteLength))
+                  || parseInt(binRes.headers.get('Content-Length') || '0', 10);
     const reader = binRes.body.getReader();
     const chunks = []; let loaded = 0;
     while (true){
