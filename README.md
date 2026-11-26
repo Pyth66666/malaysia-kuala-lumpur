@@ -1,5 +1,7 @@
 # Kuala Lumpur 3D — City Explorer
 
+**Live demo:** https://pyth66666.github.io/malaysia-kuala-lumpur/ (works on phones too)
+
 A 1:1-scale 3D map of Kuala Lumpur city center built from OpenStreetMap data and
 playable in the browser: fly or walk the real streets, toggle day/night, teleport
 to landmarks, and export the whole city to Blender.
