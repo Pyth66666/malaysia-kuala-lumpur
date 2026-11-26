@@ -1720,9 +1720,28 @@ function drawMinimap(){
   mg.fillText('N', nx - 4, ny + 4);
 }
 let _drawCallReported = false;
+let _fps = 0, _fpsFrames = 0, _fpsT = performance.now();
+// dev/verification hooks (no gameplay effect)
+window.__kl = {
+  THREE, scene, city, camera: cam, renderer,
+  setView(x, y, z, yawV, pitchV){
+    cam.position.set(x, y, z);
+    yaw = yawV; pitch = pitchV || 0;
+    applyLook();
+  },
+  getState(){
+    return { pos: cam.position.toArray(), yaw, pitch, fly, night,
+             calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+             fps: Math.round(_fps) };
+  },
+  setFly, setNight, teleportTo, toast
+};
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
+  _fpsFrames++;
+  const now = performance.now();
+  if (now - _fpsT >= 1000){ _fps = _fpsFrames * 1000 / (now - _fpsT); _fpsFrames = 0; _fpsT = now; }
   // drift clouds
   if (cloudGroup.visible){
     for (const c of cloudGroup.children){
