@@ -82,6 +82,11 @@ window.onerror = (msg, src, line) => {
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { buildPetronas, PETRONAS } from './landmarks/petronas.js';
+import { PETRONAS_OUTLINE } from './landmarks/petronas_data.js';
+import { buildMerdeka, MERDEKA } from './landmarks/merdeka.js';
+import { SAS_OUTLINE } from './landmarks/merdeka_data.js';
+const landmarkRigs = [];   // detailed landmark models: {setNight(on), update(t)}
 
 // ================= renderer =================
 const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -140,6 +145,7 @@ function setNight(on){
   skyMat.uniforms.uNight.value = on ? 1.0 : 0.0;
   cloudGroup.visible = !on;
   winMats.forEach(m => { m.emissiveIntensity = on ? 1.4 : 0.0; });
+  landmarkRigs.forEach(r => r.setNight && r.setNight(on));
   streetLights.forEach(l => { l.headOn.emissiveIntensity = on ? 1.6 : 0; });
   if (typeof headlightMat !== 'undefined'){
     headlightMat.emissiveIntensity = on ? 2.0 : 0.0;
@@ -308,6 +314,48 @@ async function loadScene(){
 }
 const s = await loadScene();
 const city = new THREE.Group(); city.name = 'KualaLumpur';
+
+// ---- remove generic OSM extrusions where a detailed landmark model replaces them ----------
+// (otherwise e.g. the Petronas outline, which has no height tag, shows up as a 30 m grey block)
+{
+  const MERDEKA118 = [-1219, 1780];
+  const zones = [
+    { poly: PETRONAS_OUTLINE, minY: 0 },
+    { poly: SAS_OUTLINE, minY: 0 },
+    { circle: [MERDEKA118[0], MERDEKA118[1], 40], minY: 120 },   // OSM 678.9 m prism → detailed model
+  ];
+  for (const z of zones){
+    if (z.poly){ z.minX = Math.min(...z.poly.map(p => p[0])); z.maxX = Math.max(...z.poly.map(p => p[0]));
+                 z.minZ = Math.min(...z.poly.map(p => p[1])); z.maxZ = Math.max(...z.poly.map(p => p[1])); }
+  }
+  const inPoly = (poly, x, z) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+      const [xi, zi] = poly[i], [xj, zj] = poly[j];
+      if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  const B = Float32Array.from(s.buildings), C = Float32Array.from(s.buildings_c), n = B.length / 9;
+  const keep = new Uint8Array(n); let kept = 0;
+  for (let t = 0; t < n; t++){
+    const o = t * 9, cx = (B[o] + B[o+3] + B[o+6]) / 3, cz = (B[o+2] + B[o+5] + B[o+8]) / 3;
+    const ymax = Math.max(B[o+1], B[o+4], B[o+7]);
+    let drop = false;
+    for (const zn of zones){
+      if (ymax < zn.minY) continue;
+      if (zn.circle){ if (Math.hypot(cx - zn.circle[0], cz - zn.circle[1]) < zn.circle[2]){ drop = true; break; } }
+      else if (cx >= zn.minX && cx <= zn.maxX && cz >= zn.minZ && cz <= zn.maxZ && inPoly(zn.poly, cx, cz)){ drop = true; break; }
+    }
+    if (!drop){ keep[t] = 1; kept++; }
+  }
+  if (kept < n){
+    const nb = new Float32Array(kept * 9), nc = new Float32Array(kept * 9);
+    for (let t = 0, k = 0; t < n; t++) if (keep[t]){ nb.set(B.subarray(t * 9, t * 9 + 9), k); nc.set(C.subarray(t * 9, t * 9 + 9), k); k += 9; }
+    s.buildings = nb; s.buildings_c = nc;
+  }
+  console.info(`landmarks: replaced ${n - kept} OSM building triangles with detailed models`);
+}
 
 // --- buildings: per-triangle color buffer groups tall/short via heuristic ---
 // We rebuild two meshes: glass (tall) and warm (short), using color brightness as classifier
@@ -982,7 +1030,7 @@ function tower118(){
   // mall at base
   const mall = new THREE.Mesh(new THREE.BoxGeometry(90, 18, 60), facadeFor(false, 18));
   mall.position.set(55, 9, 25); mall.castShadow = true; g.add(mall);
-  g.position.set(50, 0, 1815);
+  g.position.set(-1219, 0, 1780);   // OSM "Menara Merdeka Maybank" centroid (was 1.3 km off at 50, 1815)
   return g;
 }
 // Menara KL: 421 m. Shaft, double-deck observation pod, antenna mast.
@@ -1063,7 +1111,11 @@ function sultanAbdulSamad(){
   g.rotation.y = -0.35;  // true bearing: long axis runs NNW-SSE along Jalan Raja
   return g;
 }
-city.add(petronas(), tower118(), klTower(), sultanAbdulSamad());
+// Detailed, OSM-placed models replace the old Petronas and Sultan Abdul Samad boxes.
+const petronasRig = buildPetronas();
+const merdekaRig = buildMerdeka();
+landmarkRigs.push(petronasRig, merdekaRig);
+city.add(petronasRig.group, tower118(), klTower(), merdekaRig.group);
 scene.add(city);
 document.getElementById('loading').style.opacity = 0;
 setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 700);
@@ -1391,19 +1443,22 @@ const clock = new THREE.Clock();
 const _dir = new THREE.Vector3();
 
 // ================= teleport menu =================
+// All positions measured from OSM (metres from KLCC, x east, z south). `look` = what to face.
+const lookYaw = (px, pz, tx, tz) => Math.atan2(-(tx - px), -(tz - pz));   // fwd = (-sin yaw, -cos yaw)
+const spot = (name, x, y, z, tx, tz, walk = true) => ({name, pos: [x, y, z], yaw: lookYaw(x, z, tx, tz), walk});
 const teleportSpots = [
-  {name: 'KLCC Park',           pos: [-160, 1.7, 210],   yaw: -0.64, walk: true},   // faces north → towers
-  {name: 'Petronas Towers',     pos: [8, 1.7, 90],       yaw: Math.PI,     walk: true},
-  {name: 'Sky (view city)',     pos: [-620, 420, 760],   yaw: Math.PI*0.75, walk: false},
-  {name: 'KL Tower',            pos: [-881, 1.7, 480],   yaw: 1.2,         walk: true},
-  {name: 'Merdeka 118',         pos: [50, 1.7, 1650],    yaw: Math.PI*0.8, walk: true},
-  {name: 'Sultan Abdul Samad',  pos: [-1980, 1.7, 980],  yaw: -0.35+Math.PI, walk: true},
-  {name: 'Dataran Merdeka',     pos: [-2050, 1.7, 1050], yaw: -0.35,       walk: true},
-  {name: 'KL Sentral',          pos: [-1700, 1.7, 600],  yaw: 1.5,         walk: true},
-  {name: 'Bukit Bintang',       pos: [-78, 1.7, 1200],   yaw: Math.PI*0.6, walk: true},
-  {name: 'Chinatown',           pos: [-1745, 1.7, 1480], yaw: Math.PI*0.5, walk: true},
-  {name: 'Titiwangsa Lake',    pos: [-411, 1.7, -750],  yaw: Math.PI*1.2, walk: true},
-  {name: 'Highway overpass',    pos: [300, 1.7, 900],    yaw: Math.PI*0.7, walk: true},
+  spot('KLCC Park',          -40, 1.7, 230,   10, -13),
+  spot('Petronas Towers',     95, 1.7, 75,    10, -13),
+  spot('Sky (view city)',   -620, 420, 760,   10, -13, false),
+  spot('KL Tower',          -883, 1.7, 640, -883, 546),
+  spot('Merdeka 118',      -1219, 1.7, 1900, -1219, 1780),
+  spot('Sultan Abdul Samad', -1995, 1.7, 1005, -1926, 1011),
+  spot('Dataran Merdeka',  -2005, 1.7, 935, -2031, 1113),
+  spot('KL Sentral',       -2740, 1.7, 2560, -2812, 2592),
+  spot('Bukit Bintang',      -78, 1.7, 1200, -344, 1182),
+  spot('Chinatown (Petaling St)', -1470, 1.7, 1610, -1448, 1571),
+  spot('Masjid Jamek',     -1830, 1.7, 1000, -1780, 989),
+  spot('Highway overpass',   300, 1.7, 900,    10, -13),
 ];
 function safeSpawn(x, z){
   // if spawn is inside a building collision cell, search outward for a free spot
@@ -1670,10 +1725,10 @@ mini.title = 'Click to enlarge';
 document.body.appendChild(mini);
 const mg = mini.getContext('2d');
 const mapBlips = [
-  {name:'KLCC', x:8, z:-14, c:'#ffd25e'},
-  {name:'M118', x:50, z:1815, c:'#e0a0ff'},
-  {name:'KLTw', x:-881, z:554, c:'#7fe0ff'},
-  {name:'SAS', x:-2079, z:1106, c:'#7fe08f'},
+  {name:'KLCC', x:10, z:-13, c:'#ffd25e'},
+  {name:'M118', x:-1219, z:1780, c:'#e0a0ff'},
+  {name:'KLTw', x:-883, z:546, c:'#7fe0ff'},
+  {name:'SAS', x:-1926, z:1011, c:'#7fe08f'},
 ];
 let mapBig = false;
 function sizeMini(){
@@ -1742,6 +1797,7 @@ renderer.setAnimationLoop(() => {
   _fpsFrames++;
   const now = performance.now();
   if (now - _fpsT >= 1000){ _fps = _fpsFrames * 1000 / (now - _fpsT); _fpsFrames = 0; _fpsT = now; }
+  for (const r of landmarkRigs) if (r.update) r.update(t);
   // drift clouds
   if (cloudGroup.visible){
     for (const c of cloudGroup.children){
