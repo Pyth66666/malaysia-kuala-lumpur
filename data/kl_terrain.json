@@ -1,0 +1,10 @@
+{
+ "binary": "kl_terrain.bin",
+ "minX": -5037.60009765625,
+ "minZ": -3135.830078125,
+ "step": 15.0,
+ "nx": 441,
+ "nz": 502,
+ "datumASL": 45.85,
+ "source": "Copernicus GLO-30 DEM (ESA), buildings masked, canopy suppressed"
+}

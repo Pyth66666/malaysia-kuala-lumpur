@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b1020">
 <title>Kuala Lumpur 3D — City Explorer</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#0b1020;font-family:system-ui,sans-serif}
@@ -42,6 +45,39 @@
     #hud{font-size:11px;padding:8px 10px;max-width:60vw}
     #mode{font-size:11px;padding:6px 9px}
   }
+  /* ---------- phone / tablet layout (body.touch) ---------- */
+  .padBtn{position:fixed;border-radius:50%;background:rgba(10,15,35,.55);color:#e4ecff;
+       border:2px solid rgba(120,160,220,.55);font:600 12px system-ui,sans-serif;display:none;
+       align-items:center;justify-content:center;touch-action:none;user-select:none;-webkit-user-select:none;z-index:6}
+  .padBtn.on,.padBtn:active{background:rgba(60,110,190,.75)}
+  body.touch{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;overscroll-behavior:none}
+  body.touch canvas{touch-action:none}
+  body.touch #hud{display:none}
+  body.touch .padBtn{display:flex}
+  body.touch #topBtns{top:calc(8px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));gap:6px}
+  body.touch #topBtns button{padding:9px 11px;font-size:13px;min-height:40px}
+  body.touch #mode{top:calc(140px + env(safe-area-inset-top));bottom:auto;left:calc(10px + env(safe-area-inset-left));
+       font-size:11px;padding:5px 9px}
+  body.touch #teleport{top:calc(60px + env(safe-area-inset-top));right:8px;left:auto;max-height:55vh;width:min(260px,70vw)}
+  body.touch #teleport button{padding:10px 12px!important;font-size:14px!important}
+  body.touch #joystick{left:calc(22px + env(safe-area-inset-left));bottom:calc(26px + env(safe-area-inset-bottom));
+       width:132px;height:132px}
+  body.touch #joyKnob{left:44px;top:44px}
+  body.touch #jumpBtn{right:calc(22px + env(safe-area-inset-right));bottom:calc(30px + env(safe-area-inset-bottom));
+       width:78px;height:78px;display:flex;align-items:center;justify-content:center}
+  #sprintBtn{right:calc(112px + env(safe-area-inset-right));bottom:calc(26px + env(safe-area-inset-bottom));width:58px;height:58px}
+  #sinkBtn{right:calc(30px + env(safe-area-inset-right));bottom:calc(122px + env(safe-area-inset-bottom));width:58px;height:58px}
+  #zoomIn{right:calc(10px + env(safe-area-inset-right));top:42%;width:48px;height:48px;font-size:22px}
+  #zoomOut{right:calc(10px + env(safe-area-inset-right));top:calc(42% + 58px);width:48px;height:48px;font-size:22px}
+  body.touch #toast{bottom:auto;top:calc(64px + env(safe-area-inset-top))}
+  body.touch.flymode #sinkBtn{display:flex}
+  body.touch:not(.flymode) #sinkBtn{display:none}
+  @media (orientation: landscape) and (max-height: 500px){
+    body.touch #mode{top:calc(126px + env(safe-area-inset-top))}
+    body.touch #joystick{width:118px;height:118px;bottom:calc(16px + env(safe-area-inset-bottom))}
+    body.touch #joyKnob{left:37px;top:37px}
+    #zoomIn{top:30%} #zoomOut{top:calc(30% + 56px)}
+  }
 </style>
 </head>
 <body>
@@ -62,6 +98,10 @@ T places · 1–0,-,= teleport · H hide HUD</div>
 </div>
 <div id="joystick" role="group" aria-label="Movement joystick"><div id="joyKnob"></div></div>
 <div id="jumpBtn" role="button" aria-label="Jump or rise">JUMP</div>
+<div id="sprintBtn" class="padBtn" role="button" aria-label="Toggle sprint">RUN</div>
+<div id="sinkBtn" class="padBtn" role="button" aria-label="Fly down">DOWN</div>
+<div id="zoomIn" class="padBtn" role="button" aria-label="Zoom in">+</div>
+<div id="zoomOut" class="padBtn" role="button" aria-label="Zoom out">−</div>
 <div id="crosshair" aria-hidden="true"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="loading" role="status" aria-live="polite">Loading Kuala Lumpur…</div>
@@ -92,7 +132,8 @@ const landmarkRigs = [];   // detailed landmark models: {setNight(on), update(t)
 const renderer = new THREE.WebGLRenderer({antialias:true});
 window.renderer = renderer;  // expose for debugging (renderer.info.render.calls)
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2));   // phones: fewer pixels = smooth fps
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -116,7 +157,7 @@ const ambient = new THREE.AmbientLight(0xbfd4ff, DAY.ambI); scene.add(ambient);
 const hemi = new THREE.HemisphereLight(0xcfe4ff, 0x9a9a90, DAY.hemiI + 0.25); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff1da, DAY.sunI);
 sun.position.set(-500, 1100, 350); sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
 Object.assign(sun.shadow.camera, {left:-500, right:500, top:500, bottom:-500, far:4000});
 sun.shadow.camera.updateProjectionMatrix();
 // snap shadow camera to texel grid to avoid shimmer while following the player
@@ -357,6 +398,25 @@ const city = new THREE.Group(); city.name = 'KualaLumpur';
   console.info(`landmarks: replaced ${n - kept} OSM building triangles with detailed models`);
 }
 
+// ---- terrain: bare-ground heights from the Copernicus GLO-30 DEM (tools/make_terrain.py) -----
+// Scene y = metres relative to the ground at KLCC. Without the files the city stays flat.
+const TERRAIN = await (async () => {
+  try {
+    const meta = await (await fetch('./data/kl_terrain.json')).json();
+    const r = await fetch('./data/' + meta.binary);
+    if (!r.ok) throw new Error('terrain grid missing');
+    return { ...meta, h: new Float32Array(await r.arrayBuffer()) };
+  } catch (e){ console.warn('terrain: flat ground (' + e.message + ')'); return null; }
+})();
+function groundAt(x, z){
+  if (!TERRAIN) return 0;
+  const { minX, minZ, step, nx, nz, h } = TERRAIN;
+  const i = Math.min(Math.max((x - minX) / step, 0), nx - 1.001), j = Math.min(Math.max((z - minZ) / step, 0), nz - 1.001);
+  const i0 = i | 0, j0 = j | 0, fi = i - i0, fj = j - j0, o = j0 * nx + i0;
+  return (h[o] * (1 - fi) + h[o + 1] * fi) * (1 - fj) + (h[o + nx] * (1 - fi) + h[o + nx + 1] * fi) * fj;
+}
+window.groundAt = groundAt;
+
 // --- buildings: per-triangle color buffer groups tall/short via heuristic ---
 // We rebuild two meshes: glass (tall) and warm (short), using color brightness as classifier
 // and attach facade textures. Simpler & robust: keep vertexColors base + overlay windows via
@@ -564,9 +624,18 @@ const BOUNDS = (() => {
           get cx(){ return (this.minX + this.maxX)/2; },
           get cz(){ return (this.minZ + this.maxZ)/2; }};
 })();
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(BOUNDS.halfX*2 + 200, BOUNDS.halfZ*2 + 200),
-  new THREE.MeshStandardMaterial({color:0xb8b4a8, roughness:1}));
-ground.rotation.x = -Math.PI/2; ground.position.set(BOUNDS.cx, -0.08, BOUNDS.cz); ground.receiveShadow = true;
+// ground = terrain mesh (~20 m grid) following groundAt(); flat if there is no terrain data
+const groundGeo = (() => {
+  const w = BOUNDS.halfX*2 + 1200, d = BOUNDS.halfZ*2 + 1200;
+  const g = new THREE.PlaneGeometry(w, d, TERRAIN ? Math.ceil(w / 20) : 1, TERRAIN ? Math.ceil(d / 20) : 1);
+  g.rotateX(-Math.PI/2); g.translate(BOUNDS.cx, 0, BOUNDS.cz);
+  const p = g.getAttribute('position');
+  for (let i = 0; i < p.count; i++) p.setY(i, groundAt(p.getX(i), p.getZ(i)) - 0.08);
+  g.computeVertexNormals();
+  return g;
+})();
+const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({color:0xb8b4a8, roughness:1}));
+ground.receiveShadow = true; ground.userData.noDrape = true;
 city.add(ground);
 
 // ================= trees (instanced) =================
@@ -596,7 +665,7 @@ function scatterTrees(){
     const x = ax+u*(bx-ax)+v*(cx-ax), z = az+u*(bz-az)+v*(cz-az);
     // skip trees inside buildings or on roads
     if (typeof buildingHeightAt === 'function' && buildingHeightAt(x, z) > 0.5) continue;
-    trees.push([x, 0.05, z]);
+    trees.push([x, 0.05 + groundAt(x, z), z]);
   }
   return trees;
 }
@@ -745,7 +814,7 @@ function updateCars(dt){
     const lane = c.offset * (c.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (c.dir < 0 ? Math.PI : 0);
-    _M.makeRotationY(r); _M.setPosition(x, 0.22, z);
+    _M.makeRotationY(r); _M.setPosition(x, 0.22 + groundAt(x, z), z);
     bodyInst.setMatrixAt(i, _M);
     glassInst.setMatrixAt(i, _M);
     wheelInst.setMatrixAt(i, _M);
@@ -789,7 +858,7 @@ const streetLights = [];
   const _lM = new THREE.Matrix4();
   for (let i = 0; i < LAMP; i++){
     const lp = lampPts[i];
-    _lM.makeRotationY(lp.rot); _lM.setPosition(lp.x, 0, lp.z);
+    _lM.makeRotationY(lp.rot); _lM.setPosition(lp.x, groundAt(lp.x, lp.z), lp.z);
     poleInst.setMatrixAt(i, _lM);
     headInst.setMatrixAt(i, _lM);
   }
@@ -876,6 +945,7 @@ function updateTrains(dt){
     tr.t = (tr.t + tr.speed * dt) % 1;
     posOnPath(tr.path, tr.t, _tp);
     posOnPath(tr.path, (tr.t + 0.002) % 1, _tp2);
+    _tp.y += groundAt(_tp.x, _tp.z); _tp2.y += groundAt(_tp2.x, _tp2.z);
     tr.g.position.copy(_tp);
     tr.g.lookAt(_tp2);
   }
@@ -933,7 +1003,7 @@ function updateBuses(dt){
     const lane = b.offset * (b.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (b.dir < 0 ? Math.PI : 0);
-    _bM.makeRotationY(r); _bM.setPosition(x, 0.22 + 1.33, z);
+    _bM.makeRotationY(r); _bM.setPosition(x, 0.22 + 1.33 + groundAt(x, z), z);
     busInst.setMatrixAt(i, _bM);
     b.t = (b.t + b.speed * dt) % 1;
   }
@@ -1297,7 +1367,7 @@ function updateAirplane(dt){
 const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.3, 15000);
 const cam = new THREE.Object3D();
 // start standing on Jalan Ampang sidewalk near KLCC, eye height 1.7 m
-cam.position.set(-160, 1.7, 210);
+cam.position.set(-160, 1.7 + groundAt(-160, 210), 210);
 cam.add(camera);
 scene.add(cam);
 let yaw = Math.PI * 0.9, pitch = 0.0;
@@ -1306,21 +1376,45 @@ applyLook();
 
 // drag-look works with mouse AND touchpad (pointer events cover both),
 // plus arrow keys as a no-drag alternative for 360 looking
-let dragging = false, lastX = 0, lastY = 0;
-renderer.domElement.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; renderer.domElement.setPointerCapture(e.pointerId); });
-addEventListener('pointerup', () => dragging = false);
-addEventListener('pointermove', e => {
-  if (!dragging) return;
-  yaw   -= (e.clientX - lastX) * 0.0032;
-  pitch -= (e.clientY - lastY) * 0.0032;
+// Each finger on the canvas is tracked by its pointerId, so the joystick finger never turns the
+// view. One finger = look; two fingers on the canvas = pinch zoom.
+const canvasPtrs = new Map();   // pointerId -> {x, y}
+let pinchDist = 0;
+const zoomFov = { min: 25, max: 85, base: 70 };
+function setZoom(fov){
+  camera.fov = THREE.MathUtils.clamp(fov, zoomFov.min, zoomFov.max); camera.updateProjectionMatrix();
+}
+function zoomBy(f){ setZoom(camera.fov / f); toast('Zoom ' + (zoomFov.base / camera.fov).toFixed(1) + '×', 900); }
+renderer.domElement.addEventListener('pointerdown', e => {
+  canvasPtrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  renderer.domElement.setPointerCapture(e.pointerId);
+  if (canvasPtrs.size === 2){ const [a, b] = [...canvasPtrs.values()]; pinchDist = Math.hypot(a.x - b.x, a.y - b.y); }
+});
+const endPtr = e => { canvasPtrs.delete(e.pointerId); pinchDist = 0; };
+renderer.domElement.addEventListener('pointerup', endPtr);
+renderer.domElement.addEventListener('pointercancel', endPtr);
+renderer.domElement.addEventListener('pointermove', e => {
+  const p = canvasPtrs.get(e.pointerId);
+  if (!p) return;
+  if (canvasPtrs.size >= 2){                        // pinch zoom
+    p.x = e.clientX; p.y = e.clientY;
+    const [a, b] = [...canvasPtrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchDist > 0) setZoom(camera.fov * pinchDist / d);
+    pinchDist = d; return;
+  }
+  const k = 0.0032 * camera.fov / zoomFov.base;     // finer look when zoomed in
+  yaw   -= (e.clientX - p.x) * k;
+  pitch -= (e.clientY - p.y) * k;
   pitch = THREE.MathUtils.clamp(pitch, -Math.PI/2+0.05, Math.PI/2-0.05);
-  lastX = e.clientX; lastY = e.clientY;
+  p.x = e.clientX; p.y = e.clientY;
   applyLook();
 });
+// keyboard zoom: Z = in, X = out
+addEventListener('keydown', e => { if (e.code === 'KeyZ') zoomBy(1.15); if (e.code === 'KeyX') zoomBy(1/1.15); });
 // touchpad two-finger swipe (wheel) = look around too
 
 // ================= touch / phone controls =================
-const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const isTouch = IS_TOUCH;
 if (isTouch) document.body.classList.add('touch');
 // joystick state feeds move() like gamepad axes
 const joy = {x: 0, y: 0, active: false};
@@ -1340,14 +1434,15 @@ const joy = {x: 0, y: 0, active: false};
     const L = Math.hypot(dx, dy);
     if (L > 1){ dx /= L; dy /= L; }
     joy.x = dx; joy.y = dy;
-    knob.style.left = (38 + dx*30) + 'px';
-    knob.style.top  = (38 + dy*30) + 'px';
+    const c0 = (zone.clientWidth - knob.offsetWidth) / 2;
+    knob.style.left = (c0 + dx*zone.clientWidth*0.3) + 'px';
+    knob.style.top  = (c0 + dy*zone.clientWidth*0.3) + 'px';
     e.preventDefault();
   });
   const end = e => {
     if (e.pointerId !== jid) return;
     jid = null; joy.active = false; joy.x = joy.y = 0;
-    knob.style.left = '38px'; knob.style.top = '38px';
+    knob.style.left = ''; knob.style.top = '';
   };
   zone.addEventListener('pointerup', end);
   zone.addEventListener('pointercancel', end);
@@ -1363,6 +1458,22 @@ let touchRise = false;
   });
   jb.addEventListener('pointerup', () => touchRise = false);
   jb.addEventListener('pointercancel', () => touchRise = false);
+}
+// fly-down, sprint toggle, zoom buttons (phone)
+let touchSink = false, touchSprint = false;
+{
+  const hold = (id, on) => {
+    const el = document.getElementById(id);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); on(true); navigator.vibrate?.(8); });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, () => on(false));
+  };
+  hold('sinkBtn', v => touchSink = v);
+  const sb = document.getElementById('sprintBtn');
+  sb.addEventListener('pointerdown', e => { e.preventDefault(); touchSprint = !touchSprint; sb.classList.toggle('on', touchSprint); navigator.vibrate?.(8); });
+  for (const [id, f] of [['zoomIn', 1.2], ['zoomOut', 1/1.2]]){
+    const el = document.getElementById(id);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); zoomBy(f); });
+  }
 }
 // top toggle buttons
 document.getElementById('btnTP').onclick = () => {
@@ -1393,6 +1504,7 @@ function arrowLook(dt){
 }
 
 let fly = true, baseSpeed = 90;
+document.body.classList.add('flymode');
 const modeEl = document.getElementById('mode');
 const crosshairEl = document.getElementById('crosshair');
 function updateModeEl(){
@@ -1410,13 +1522,14 @@ function toast(msg, ms = 2200){
 }
 function setFly(on){
   fly = on;
+  document.body.classList.toggle('flymode', fly);   // shows the DOWN button on phones
   if (!fly){
     // enter walk mode: gravity takes over from current height
     vy = 0; onGround = false;
     // if toggled while inside a building volume, hop up so collision doesn't trap us
-    const bh = buildingHeightAt(cam.position.x, cam.position.z);
-    if (bh > 2.2 && cam.position.y < bh + EYE){
-      cam.position.y = bh + EYE + 0.1;
+    const bh = buildingHeightAt(cam.position.x, cam.position.z), G = groundAt(cam.position.x, cam.position.z);
+    if (bh > 2.2 && cam.position.y < G + bh + EYE){
+      cam.position.y = G + bh + EYE + 0.1;
       onGround = true;
     }
   }
@@ -1474,11 +1587,12 @@ function safeSpawn(x, z){
 }
 function teleportTo(spot){
   const [sx, sz] = safeSpawn(spot.pos[0], spot.pos[2]);
-  cam.position.set(sx, spot.pos[1], sz);
+  const G = groundAt(sx, sz);
+  cam.position.set(sx, spot.pos[1] + G, sz);
   yaw = spot.yaw; pitch = 0;
-  vy = 0; onGround = true; groundY = 0.15;
+  vy = 0; onGround = true; groundY = G;
   if (fly === spot.walk) setFly(!spot.walk);
-  if (!fly) cam.position.y = EYE;
+  if (!fly) cam.position.y = G + EYE;
   toast('Teleport: ' + spot.name);
   applyLook();
 }
@@ -1563,12 +1677,41 @@ function buildingHeightAt(x, z){
 // now that the collision grid exists, scatter + build trees
 treePts.push(...scatterTrees());
 buildTrees();
+
+// ---- drape the city onto the terrain ---------------------------------------------------------
+// city-scale or ground-level meshes (buildings, roads, rails, parks, water) follow the terrain per
+// vertex; placed objects (landmarks, stations, towers) are lifted rigidly to the ground under them.
+// Instanced trees/lamps and moving vehicles/trains already use groundAt() themselves.
+if (TERRAIN){
+  const done = new Set(), _wp = new THREE.Vector3(), _sz = new THREE.Vector3();
+  const drapeGeo = geo => {
+    if (done.has(geo)) return; done.add(geo);
+    const p = geo.getAttribute('position');
+    for (let i = 0; i < p.count; i++) p.setY(i, p.getY(i) + groundAt(p.getX(i), p.getZ(i)));
+    p.needsUpdate = true; geo.computeBoundingBox(); geo.computeBoundingSphere();
+  };
+  const drape = obj => {
+    if (obj.userData.noDrape || obj.isInstancedMesh || obj === carParent || trains.some(t => t.g === obj)) return;
+    if (obj.position.lengthSq() > 1e-6 || obj.rotation.y !== 0){          // placed: lift rigidly
+      obj.getWorldPosition(_wp); obj.position.y += groundAt(_wp.x, _wp.z); return;
+    }
+    if (obj.isMesh){
+      obj.geometry.computeBoundingBox();
+      const bb = obj.geometry.boundingBox; bb.getSize(_sz);
+      if (bb.max.y < 2 || Math.max(_sz.x, _sz.z) > 300) drapeGeo(obj.geometry);
+      else obj.position.y += groundAt((bb.min.x + bb.max.x) / 2, (bb.min.z + bb.max.z) / 2);
+      return;
+    }
+    for (const c of [...obj.children]) drape(c);
+  };
+  for (const c of [...city.children]) drape(c);
+}
 addEventListener('keydown', e => {
   if (e.code === 'Space' && !fly && onGround){ vy = 7.5; onGround = false; }  // jump
 });
 
 function move(dt, g = {mx:0, mz:0, my:0}){
-  const sprint = keys.ShiftLeft || keys.ShiftRight || gpSprint;
+  const sprint = keys.ShiftLeft || keys.ShiftRight || gpSprint || touchSprint;
   const speed = (fly ? baseSpeed : (sprint ? 9.5 : 4.2));  // real human speeds: 4.2 walk / 9.5 run
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -1610,9 +1753,9 @@ function move(dt, g = {mx:0, mz:0, my:0}){
     // gravity + ground: stand on street (0.15) or land on building roofs
     vy -= GRAVITY * dt;
     cam.position.y += vy * dt;
-    const bh = buildingHeightAt(cam.position.x, cam.position.z);
-    // ground level: street, or roof top if we are above/at the roof
-    const floorY = (bh > 2.2 && cam.position.y >= bh + EYE - 0.5) ? bh + EYE : 0.15;
+    const bh = buildingHeightAt(cam.position.x, cam.position.z), G = groundAt(cam.position.x, cam.position.z);
+    // eye level above the terrain on the street, or above the roof if we are on top of a building
+    const floorY = G + ((bh > 2.2 && cam.position.y >= G + bh + EYE - 0.5) ? bh + EYE : EYE);
     if (cam.position.y <= floorY && vy <= 0){
       cam.position.y = floorY;
       vy = 0; onGround = true;
@@ -1719,7 +1862,9 @@ const w2m = (wx, wz) => [ (wx - BOUNDS.minX) * MAP_SCALE + MAP_OFFX, (wz - BOUND
 }
 // live minimap canvas in bottom-right (2x backing for crisp HiDPI)
 const mini = document.createElement('canvas');
-mini.style.cssText = 'position:fixed;bottom:12px;right:12px;border-radius:12px;border:2px solid #3a5f9e;z-index:6;background:#111';
+mini.style.cssText = isTouch
+  ? 'position:fixed;top:calc(8px + env(safe-area-inset-top));left:calc(8px + env(safe-area-inset-left));border-radius:50%;border:2px solid #3a5f9e;z-index:6;background:#111'
+  : 'position:fixed;bottom:12px;right:12px;border-radius:12px;border:2px solid #3a5f9e;z-index:6;background:#111';
 mini.setAttribute('aria-label', 'Minimap — click to enlarge or shrink');
 mini.title = 'Click to enlarge';
 document.body.appendChild(mini);
@@ -1732,7 +1877,7 @@ const mapBlips = [
 ];
 let mapBig = false;
 function sizeMini(){
-  const css = mapBig ? 440 : 220;
+  const css = isTouch ? (mapBig ? Math.min(innerWidth, innerHeight) - 24 : 124) : (mapBig ? 440 : 220);
   mini.style.width = mini.style.height = css + 'px';
   mini.width = mini.height = css * 2;
 }
@@ -1809,7 +1954,8 @@ renderer.setAnimationLoop(() => {
   updateAirplane(dt);
   arrowLook(dt);
   const g = pollGamepad(dt);
-  if (joy.active){ g.mx = joy.x; g.mz = joy.y; if (touchRise && fly) g.my = 1; }
+  if (joy.active){ g.mx = joy.x; g.mz = joy.y; }
+  if (fly){ if (touchRise) g.my = 1; else if (touchSink) g.my = -1; }
   move(dt, g);
   updateCars(dt);
   updateBuses(dt);
