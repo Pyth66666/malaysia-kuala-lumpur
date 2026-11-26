@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "kl3d",
   "version": "1.0.0",
-  "description": "",
+  "description": "1:1-scale Kuala Lumpur city explorer built from OpenStreetMap (three.js, 21 MB binary scene)",
   "main": "index.js",
   "scripts": {
     "start": "node server.js"

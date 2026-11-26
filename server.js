@@ -6,6 +6,8 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 
 const ROOT = __dirname;
+// 127.0.0.1 by default; pass --lan (or PHONE=1) to allow phones on the same Wi-Fi
+const BIND = (process.argv.includes('--lan') || process.env.PHONE) ? '0.0.0.0' : '127.0.0.1';
 const PORT = 8787;
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -80,4 +82,10 @@ http.createServer((req, res) => {
       fs.createReadStream(file).pipe(res);
     }
   });
-}).listen(PORT, '127.0.0.1', () => console.log(`KL 3D server on http://127.0.0.1:${PORT}`));
+}).listen(PORT, BIND, () => {
+  console.log(`KL 3D server on http://127.0.0.1:${PORT}`);
+  if (BIND === '0.0.0.0'){
+    for (const ifs of Object.values(require('os').networkInterfaces()))
+      for (const i of ifs) if (i.family === 'IPv4' && !i.internal) console.log(`  LAN: http://${i.address}:${PORT}`);
+  }
+});
