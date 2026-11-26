@@ -82,4 +82,10 @@ http.createServer((req, res) => {
       fs.createReadStream(file).pipe(res);
     }
   });
-}).listen(PORT, '127.0.0.1', () => console.log(`KL 3D server on http://127.0.0.1:${PORT}`));
+}).listen(PORT, BIND, () => {
+  console.log(`KL 3D server on http://127.0.0.1:${PORT}`);
+  if (BIND === '0.0.0.0'){
+    for (const ifs of Object.values(require('os').networkInterfaces()))
+      for (const i of ifs) if (i.family === 'IPv4' && !i.internal) console.log(`  LAN: http://${i.address}:${PORT}`);
+  }
+});
