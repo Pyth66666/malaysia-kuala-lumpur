@@ -127,6 +127,10 @@ import { buildPetronas, PETRONAS } from './landmarks/petronas.js';
 import { PETRONAS_OUTLINE } from './landmarks/petronas_data.js';
 import { buildMerdeka, MERDEKA } from './landmarks/merdeka.js';
 import { SAS_OUTLINE } from './landmarks/merdeka_data.js';
+import { buildKLTower, KLTOWER } from './landmarks/kltower.js';
+import { buildMerdeka118 } from './landmarks/merdeka118.js';
+import { buildJamek, JAMEK } from './landmarks/jamek.js';
+import { buildX106, X106 } from './landmarks/x106.js';
 const landmarkRigs = [];   // detailed landmark models: {setNight(on), update(t)}
 
 // ================= renderer =================
@@ -366,11 +370,18 @@ const city = new THREE.Group(); city.name = 'KualaLumpur';
   const zones = [
     { poly: PETRONAS_OUTLINE, minY: 0 },
     { poly: SAS_OUTLINE, minY: 0 },
-    { circle: [MERDEKA118[0], MERDEKA118[1], 40], minY: 120 },   // OSM 678.9 m prism → detailed model
+    { circle: [MERDEKA118[0], MERDEKA118[1], 40], minY: 120 },
+    { circle: [KLTOWER.pos[0], KLTOWER.pos[1], KLTOWER.baseR + 2], minY: 0 },   // OSM tower parts + round base
+    { poly: X106.outline, minY: 0 },
+    ...JAMEK.buildings.map(b => ({ poly: b.ring, minY: 0 })),
+    ...JAMEK.clear.map(r => ({ poly: r, minY: 0 })),
+    ...JAMEK.domes.map(d => ({ circle: [d.x, d.z, d.r * 1.3], minY: 0 })),
+    ...JAMEK.minarets.map(m => ({ circle: [m.x, m.z, m.r * 1.6], minY: 0 })),   // OSM 678.9 m prism → detailed model
   ];
   for (const z of zones){
-    if (z.poly){ z.minX = Math.min(...z.poly.map(p => p[0])); z.maxX = Math.max(...z.poly.map(p => p[0]));
-                 z.minZ = Math.min(...z.poly.map(p => p[1])); z.maxZ = Math.max(...z.poly.map(p => p[1])); }
+    if (z.poly){ const E = 1.5;   // wall triangles have their centroid ON the outline: allow a small margin
+                 z.minX = Math.min(...z.poly.map(p => p[0])) - E; z.maxX = Math.max(...z.poly.map(p => p[0])) + E;
+                 z.minZ = Math.min(...z.poly.map(p => p[1])) - E; z.maxZ = Math.max(...z.poly.map(p => p[1])) + E; }
   }
   const inPoly = (poly, x, z) => {
     let inside = false;
@@ -379,6 +390,14 @@ const city = new THREE.Group(); city.name = 'KualaLumpur';
       if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
     }
     return inside;
+  };
+  const nearPoly = (poly, x, z, e = 1.5) => {
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+      const [ax, az] = poly[j], [bx, bz] = poly[i], dx = bx - ax, dz = bz - az;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      if (Math.hypot(x - ax - dx * t, z - az - dz * t) < e) return true;
+    }
+    return false;
   };
   const B = Float32Array.from(s.buildings), C = Float32Array.from(s.buildings_c), n = B.length / 9;
   const keep = new Uint8Array(n); let kept = 0;
@@ -389,7 +408,7 @@ const city = new THREE.Group(); city.name = 'KualaLumpur';
     for (const zn of zones){
       if (ymax < zn.minY) continue;
       if (zn.circle){ if (Math.hypot(cx - zn.circle[0], cz - zn.circle[1]) < zn.circle[2]){ drop = true; break; } }
-      else if (cx >= zn.minX && cx <= zn.maxX && cz >= zn.minZ && cz <= zn.maxZ && inPoly(zn.poly, cx, cz)){ drop = true; break; }
+      else if (cx >= zn.minX && cx <= zn.maxX && cz >= zn.minZ && cz <= zn.maxZ && (inPoly(zn.poly, cx, cz) || nearPoly(zn.poly, cx, cz))){ drop = true; break; }
     }
     if (!drop){ keep[t] = 1; kept++; }
   }
@@ -1016,179 +1035,15 @@ function updateBuses(dt){
 // ================= landmarks (real-world dimensions, 1 unit = 1 meter) =================
 // Real positions computed from OSM coordinates, origin = KLCC.
 
-// Petronas Towers: 451.9 m tip. Islamic 8-point star plan = 2 nested squares rotated 45°.
-// Skybridge: DOUBLE-deck at 170 m (levels 41/42). Setbacks as floors rise.
-function landmarkFacade(isGlass, hMeters){
-  // clone the cached material so per-landmark texture repeat doesn't mutate the shared entry
-  const m = facadeFor(isGlass, hMeters).clone();
-  m.map = m.map.clone(); m.map.needsUpdate = true;
-  m.map.wrapS = m.map.wrapT = THREE.RepeatWrapping;
-  // cylinder UVs: u wraps circumference (~160 m), v wraps height once → scale for ~3.7 m floors
-  m.map.repeat.set(24, Math.max(2, Math.round(hMeters / 3.7)));
-  m.emissiveMap = m.emissiveMap.clone(); m.emissiveMap.needsUpdate = true;
-  m.emissiveMap.wrapS = m.emissiveMap.wrapT = THREE.RepeatWrapping;
-  m.emissiveMap.repeat.copy(m.map.repeat);
-  return m;
-}
-function petronas(){
-  const g = new THREE.Group(); g.name = 'PetronasTowers';
-  const glassMat = landmarkFacade(true, 379);
-  glassMat.color.set(0xaec4d8);
-  glassMat.roughness = 0.08; glassMat.metalness = 0.95; glassMat.envMapIntensity = 1.8;
-  const steelMat = new THREE.MeshStandardMaterial({color:0xd7dce2, roughness:0.25, metalness:0.85, envMap, envMapIntensity:1.2});
-  for (const dx of [-25, 25]){
-    // tower: 3 stacked star-plan sections with setbacks
-    const sections = [
-      {r1: 24, r2: 25.5, h: 130, y0: 10},     // base
-      {r1: 19, r2: 21, h: 130, y0: 140},      // mid
-      {r1: 14, r2: 17, h: 119, y0: 270},      // top (to 389? roof ~379)
-    ];
-    for (const sec of sections){
-      // 8-point star = two square prisms rotated 45°
-      for (const rot of [0, Math.PI/4]){
-        const prism = new THREE.Mesh(new THREE.CylinderGeometry(sec.r2*0.75, sec.r2*0.8, sec.h, 4), glassMat);
-        prism.rotation.y = rot + Math.PI/4;
-        prism.position.set(dx, sec.y0 + sec.h/2, 0);
-        prism.castShadow = true;
-        g.add(prism);
-      }
-    }
-    // crown + spire to 451.9
-    const crown = new THREE.Mesh(new THREE.ConeGeometry(13, 24, 4), steelMat);
-    crown.rotation.y = Math.PI/4; crown.position.set(dx, 395, 0); g.add(crown);
-    const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 2.4, 33, 8), steelMat);
-    spire.position.set(dx, 420, 0); g.add(spire);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.8, 8, 8), steelMat);
-    tip.position.set(dx, 440, 0); g.add(tip);
-    // entrance canopy
-    const canopy = new THREE.Mesh(new THREE.BoxGeometry(26, 1.5, 10), steelMat);
-    canopy.position.set(dx, 11, 28); g.add(canopy);
-  }
-  // DOUBLE-DECK skybridge at 170 m: two spans + connecting walkways
-  const bridge1 = new THREE.Mesh(new THREE.BoxGeometry(28, 3.4, 7), steelMat);
-  bridge1.position.set(0, 168, 0); bridge1.castShadow = true; g.add(bridge1);
-  const bridge2 = new THREE.Mesh(new THREE.BoxGeometry(28, 3.0, 7), steelMat);
-  bridge2.position.set(0, 176, 0); g.add(bridge2);
-  // bridge support arches under
-  const arch = new THREE.Mesh(new THREE.TorusGeometry(10, 0.5, 6, 12, Math.PI), steelMat);
-  arch.position.set(0, 160, 0); arch.rotation.z = 0; g.add(arch);
-  // true GPS offset from KLCC origin: (8, -14)
-  g.position.set(8, 0, -14);
-  return g;
-}
-// Merdeka 118: 678.9 m. Faceted diamond-plan megatall, spire from ~554 m.
-function tower118(){
-  const g = new THREE.Group(); g.name = 'Merdeka118';
-  const mat = landmarkFacade(true, 554);
-  mat.color.set(0xcdd8e4);
-  const spire = new THREE.MeshStandardMaterial({color:0xe8e8ea, roughness:0.3, metalness:0.6});
-  // lower fan (podium levels): wider
-  const podium = new THREE.Mesh(new THREE.CylinderGeometry(30, 34, 24, 6), mat);
-  podium.position.y = 12; podium.castShadow = true; g.add(podium);
-  // main shaft: faceted 6-sided, tapering with waist
-  const body1 = new THREE.Mesh(new THREE.CylinderGeometry(20, 26, 280, 6), mat);
-  body1.position.y = 164; body1.castShadow = true; g.add(body1);
-  const body2 = new THREE.Mesh(new THREE.CylinderGeometry(15, 20, 150, 6), mat);
-  body2.position.y = 379; body2.castShadow = true; g.add(body2);
-  const body3 = new THREE.Mesh(new THREE.CylinderGeometry(10, 15, 120, 6), mat);
-  body3.position.y = 514; body3.castShadow = true; g.add(body3);
-  // crown diamond
-  const crown = new THREE.Mesh(new THREE.OctahedronGeometry(10), spire);
-  crown.position.y = 582; g.add(crown);
-  // spire to 678.9
-  const needle = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 2.2, 86, 8), spire);
-  needle.position.y = 636; g.add(needle);
-  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.4, 4, 8), spire);
-  tip.position.y = 677; g.add(tip);
-  // mall at base
-  const mall = new THREE.Mesh(new THREE.BoxGeometry(90, 18, 60), facadeFor(false, 18));
-  mall.position.set(55, 9, 25); mall.castShadow = true; g.add(mall);
-  g.position.set(-1219, 0, 1780);   // OSM "Menara Merdeka Maybank" centroid (was 1.3 km off at 50, 1815)
-  return g;
-}
-// Menara KL: 421 m. Shaft, double-deck observation pod, antenna mast.
-function klTower(){
-  const g = new THREE.Group(); g.name = 'MenaraKL';
-  const concrete = new THREE.MeshStandardMaterial({color:0xd4dade, roughness:0.45, metalness:0.4});
-  const glassPod = new THREE.MeshStandardMaterial({color:0x9fc2dd, roughness:0.1, metalness:0.8, envMap, envMapIntensity:1.5});
-  // base building at foot of tower
-  const base = new THREE.Mesh(new THREE.BoxGeometry(38, 12, 38), facadeFor(false, 12));
-  base.position.y = 6; base.castShadow = true; g.add(base);
-  // shaft
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 11, 262, 16), concrete);
-  shaft.position.y = 143; shaft.castShadow = true; g.add(shaft);
-  // head structure: suspension ring + observation pods
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(12, 1.4, 8, 20), concrete);
-  ring.position.y = 276; ring.rotation.x = Math.PI/2; g.add(ring);
-  const pod1 = new THREE.Mesh(new THREE.CylinderGeometry(11.5, 9.5, 9, 16), glassPod);
-  pod1.position.y = 283; g.add(pod1);
-  const pod2 = new THREE.Mesh(new THREE.CylinderGeometry(9.5, 8, 7, 16), glassPod);
-  pod2.position.y = 294; g.add(pod2);
-  const podRoof = new THREE.Mesh(new THREE.ConeGeometry(9, 5, 16), concrete);
-  podRoof.position.y = 300; g.add(podRoof);
-  // antenna mast to 421
-  const mast1 = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 3.2, 70, 8), concrete);
-  mast1.position.y = 340; g.add(mast1);
-  const mast2 = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 1.6, 52, 6), concrete);
-  mast2.position.y = 395; g.add(mast2);
-  g.position.set(-881, 0, 554);
-  return g;
-}
-// Bangunan Sultan Abdul Samad: 1897 Moorish colonial building.
-// 41.2 m central clock tower with copper dome, two flanking wings with smaller domes.
-function sultanAbdulSamad(){
-  const g = new THREE.Group(); g.name = 'SultanAbdulSamad';
-  const cream = new THREE.MeshStandardMaterial({color:0xefe6cf, roughness:0.9});
-  const copper = new THREE.MeshStandardMaterial({color:0x3a7a5a, roughness:0.35, metalness:0.7});
-  const darkTrim = new THREE.MeshStandardMaterial({color:0x5a4a38, roughness:0.8});
-  // long main wing ~135 m
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(135, 21, 18), cream);
-  wing.position.y = 10.5; wing.castShadow = true; g.add(wing);
-  // arcade: repeated arch openings (dark inset boxes)
-  for (let i = -6; i <= 6; i++){
-    if (Math.abs(i) < 2) continue; // skip center tower area
-    const arch1 = new THREE.Mesh(new THREE.BoxGeometry(5, 8, 1.2), darkTrim);
-    arch1.position.set(i*9.5, 5, 9.2); g.add(arch1);
-    const arch2 = new THREE.Mesh(new THREE.BoxGeometry(5, 7, 1.2), darkTrim);
-    arch2.position.set(i*9.5, 14, 9.2); g.add(arch2);
-  }
-  // central clock tower 41.2 m
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(17, 30, 17), cream);
-  tower.position.y = 15; tower.castShadow = true; g.add(tower);
-  // clock faces
-  const clockMat = new THREE.MeshStandardMaterial({color:0xfdfaf0, emissive:0xfff4d0, emissiveIntensity:0.4});
-  for (const [rx, rz] of [[1,0],[-1,0],[0,1],[0,-1]]){
-    const face = new THREE.Mesh(new THREE.CircleGeometry(2.6, 20), clockMat);
-    face.position.set(rx*8.8, 34, rz*8.8);
-    face.rotation.y = rx ? (rx>0 ? Math.PI/2 : -Math.PI/2) : (rz>0 ? 0 : Math.PI);
-    g.add(face);
-  }
-  // copper onion dome on tower
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(8, 16, 12, 0, Math.PI*2, 0, Math.PI*0.55), copper);
-  dome.position.y = 38; dome.scale.y = 1.25; g.add(dome);
-  const domeTip = new THREE.Mesh(new THREE.ConeGeometry(0.4, 4, 8), copper);
-  domeTip.position.y = 48.5; g.add(domeTip);
-  // two smaller domes on wings
-  for (const wx of [-52, 52]){
-    const drum = new THREE.Mesh(new THREE.CylinderGeometry(5, 5.5, 4, 12), cream);
-    drum.position.set(wx, 23, 0); g.add(drum);
-    const wdome = new THREE.Mesh(new THREE.SphereGeometry(5.2, 14, 10, 0, Math.PI*2, 0, Math.PI*0.55), copper);
-    wdome.position.set(wx, 25.5, 0); wdome.scale.y = 1.25; g.add(wdome);
-    const wtip = new THREE.Mesh(new THREE.ConeGeometry(0.3, 2.5, 8), copper);
-    wtip.position.set(wx, 33, 0); g.add(wtip);
-  }
-  // roof ridge
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(137, 1.5, 20), darkTrim);
-  roof.position.y = 21.8; g.add(roof);
-  g.position.set(-2079, 0, 1106);
-  g.rotation.y = -0.35;  // true bearing: long axis runs NNW-SSE along Jalan Raja
-  return g;
-}
 // Detailed, OSM-placed models replace the old Petronas and Sultan Abdul Samad boxes.
 const petronasRig = buildPetronas();
 const merdekaRig = buildMerdeka();
-landmarkRigs.push(petronasRig, merdekaRig);
-city.add(petronasRig.group, tower118(), klTower(), merdekaRig.group);
+const klTowerRig = buildKLTower();
+const m118Rig = buildMerdeka118();
+const jamekRig = buildJamek();
+const x106Rig = buildX106();
+landmarkRigs.push(petronasRig, merdekaRig, klTowerRig, m118Rig, jamekRig, x106Rig);
+city.add(petronasRig.group, m118Rig.group, klTowerRig.group, merdekaRig.group, jamekRig.group, x106Rig.group);
 scene.add(city);
 document.getElementById('loading').style.opacity = 0;
 setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 700);
@@ -1573,7 +1428,9 @@ const teleportSpots = [
   spot('KL Sentral',       -2740, 1.7, 2560, -2812, 2592),
   spot('Bukit Bintang',      -78, 1.7, 1200, -344, 1182),
   spot('Chinatown (Petaling St)', -1470, 1.7, 1610, -1448, 1571),
-  spot('Masjid Jamek',     -1830, 1.7, 1000, -1780, 989),
+  spot('Masjid Jamek',     -1735, 1.7, 1035, -1780, 989),
+  spot('Exchange 106 (TRX)', 700, 1.7, 1900, 775, 1775),
+  spot('KL Tower Sky Deck', -883 + 11.4, 301.7, 546.5, -1219, 1780, false),
   spot('Highway overpass',   300, 1.7, 900,    10, -13),
 ];
 function safeSpawn(x, z){
@@ -1876,6 +1733,8 @@ const mapBlips = [
   {name:'KLCC', x:10, z:-13, c:'#ffd25e'},
   {name:'M118', x:-1219, z:1780, c:'#e0a0ff'},
   {name:'KLTw', x:-883, z:546, c:'#7fe0ff'},
+  {name:'X106', x:775, z:1775, c:'#9fd0ff'},
+  {name:'Jamek', x:-1780, z:989, c:'#ffd27f'},
   {name:'SAS', x:-1926, z:1011, c:'#7fe08f'},
 ];
 let mapBig = false;

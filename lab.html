@@ -25,6 +25,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { buildPetronas, PETRONAS } from './landmarks/petronas.js';
 import { buildMerdeka, MERDEKA } from './landmarks/merdeka.js';
+import { buildKLTower } from './landmarks/kltower.js';
+import { buildMerdeka118 } from './landmarks/merdeka118.js';
+import { buildJamek } from './landmarks/jamek.js';
+import { buildX106 } from './landmarks/x106.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -82,8 +86,16 @@ function show(name){
 const VIEWS = {
   petronas: { cam: [420, 120, 470], target: [10, 200, -13] },
   merdeka: { cam: [-2050, 45, 1080], target: [-1928, 22, 1010] },
+  x106: { cam: [1250, 260, 2150], target: [775, 260, 1775] },
+  jamek: { cam: [-1700, 40, 1060], target: [-1780, 8, 989] },
+  m118: { cam: [-850, 260, 2250], target: [-1219, 320, 1780] },
+  kltower: { cam: [-700, 230, 760], target: [-883, 250, 546] },
 };
 models.petronas = buildPetronas(); scene.add(models.petronas.group);
+try { models.x106 = buildX106(); scene.add(models.x106.group); } catch (e) { console.warn('x106', e); }
+try { models.jamek = buildJamek(); scene.add(models.jamek.group); } catch (e) { console.warn('jamek', e); }
+try { models.m118 = buildMerdeka118(); scene.add(models.m118.group); } catch (e) { console.warn('m118', e); }
+try { models.kltower = buildKLTower(); scene.add(models.kltower.group); } catch (e) { console.warn('kltower', e); }
 try { models.merdeka = buildMerdeka(); scene.add(models.merdeka.group); } catch (e) { console.warn('merdeka', e); }
 
 let night = false;
@@ -99,6 +111,10 @@ const ui = document.getElementById('ui');
 const btn = (label, fn, m) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; if (m) b.dataset.m = m; ui.appendChild(b); return b; };
 btn('Petronas', () => show('petronas'), 'petronas');
 btn('Dataran Merdeka', () => show('merdeka'), 'merdeka');
+btn('KL Tower', () => show('kltower'), 'kltower');
+btn('Merdeka 118', () => show('m118'), 'm118');
+btn('Masjid Jamek', () => show('jamek'), 'jamek');
+btn('Exchange 106', () => show('x106'), 'x106');
 btn('Day / Night', () => setNight(!night));
 btn('Street view', () => { const t = controls.target; camera.position.set(t.x - 160, 1.7, t.z + 170); controls.target.set(t.x, t.y + 60, t.z); controls.update(); });
 addEventListener('keydown', e => { if (e.code === 'KeyN') setNight(!night); });
