@@ -131,6 +131,7 @@ import { buildKLTower, KLTOWER } from './landmarks/kltower.js';
 import { buildMerdeka118 } from './landmarks/merdeka118.js';
 import { buildJamek, JAMEK } from './landmarks/jamek.js';
 import { buildX106, X106 } from './landmarks/x106.js';
+import { buildRoads3D } from './roads/roads3d.js';
 const landmarkRigs = [];   // detailed landmark models: {setNight(on), update(t)}
 
 // ================= renderer =================
@@ -361,6 +362,16 @@ async function loadScene(){
   }
 }
 const s = await loadScene();
+// 3D road network (bridges, stacked flyovers, ramps, tunnels) replaces the flat road ribbons when present
+let roads3d = null;
+try {
+  const r = await fetch('./data/kl_roads.json');
+  if (r.ok){
+    roads3d = buildRoads3D(await r.json());
+    s.roads = roads3d.roads; s.roads_c = roads3d.roads_c; s.centers = roads3d.centers;
+    console.info('roads3d:', roads3d.stats.elevatedKm, 'km elevated,', roads3d.stats.piers, 'piers');
+  }
+} catch (e){ console.warn('roads3d unavailable, using flat roads', e); }
 const city = new THREE.Group(); city.name = 'KualaLumpur';
 
 // ---- remove generic OSM extrusions where a detailed landmark model replaces them ----------
@@ -562,11 +573,14 @@ asphaltTex.repeat.set(1, 1);
 const roadMesh = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({map: asphaltTex, vertexColors: true, color: 0xffffff, roughness:0.9, metalness:0.0, side:THREE.DoubleSide}));
 roadMesh.receiveShadow = true;
 city.add(roadMesh);
+if (roads3d) city.add(roads3d.structure);
 
 // road markings: dashed center lines on major roads (proper width quads)
 const markVerts = [];
-for (const pts of s.centers){
+for (let ci = 0; ci < s.centers.length; ci++){
+  const pts = s.centers[ci], hs = roads3d && roads3d.centersH[ci];
   for (let i = 0; i < pts.length - 2; i += 2){
+    const h0 = hs ? hs[i / 2] : 0, h1 = hs ? hs[i / 2 + 1] : 0;
     const x1 = pts[i], y1 = pts[i+1], x2 = pts[i+2], y2 = pts[i+3];
     const dx = x2-x1, dy = y2-y1, L = Math.hypot(dx, dy);
     if (L < 1) continue;
@@ -576,8 +590,9 @@ for (const pts of s.centers){
       const t0 = k/n, t1 = Math.min(1, (k+0.6)/n);
       const ax1 = x1+dx*t0+nx, ay1 = y1+dy*t0+ny, bx1 = x1+dx*t1+nx, by1 = y1+dy*t1+ny;
       const ax2 = x1+dx*t0-nx, ay2 = y1+dy*t0-ny, bx2 = x1+dx*t1-nx, by2 = y1+dy*t1-ny;
-      markVerts.push(ax1, 0.12, -ay1, bx1, 0.12, -by1, bx2, 0.12, -by2);
-      markVerts.push(ax1, 0.12, -ay1, bx2, 0.12, -by2, ax2, 0.12, -ay2);
+      const ya = 0.12 + h0 + (h1 - h0) * t0, yb = 0.12 + h0 + (h1 - h0) * t1;
+      markVerts.push(ax1, ya, -ay1, bx1, yb, -by1, bx2, yb, -by2);
+      markVerts.push(ax1, ya, -ay1, bx2, yb, -by2, ax2, ya, -ay2);
     }
   }
 }
@@ -788,14 +803,16 @@ const tlInst = new THREE.InstancedMesh(tlGeo, taillightMat, MAX_CARS);
 carParent.add(bodyInst, glassInst, wheelInst, hlInst, tlInst);
 city.add(carParent);
 
-const roadPaths = s.centers.map(pts => {
-  const v = [];
-  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.22, -pts[i+1]));  // wheel bottoms sit on road (y=0.1)
+const roadPaths = s.centers.map((pts, ci) => {
+  const v = [], hs = roads3d && roads3d.centersH[ci], info = roads3d && roads3d.centersInfo[ci];
+  for (let i = 0; i < pts.length; i += 2) v.push(new THREE.Vector3(pts[i], 0.22 + (hs ? hs[i / 2] : 0), -pts[i+1]));  // wheel bottoms sit on road (y=0.1)
   const seg = []; const cum = [0]; let total = 0;
   for (let i = 0; i < v.length-1; i++){
     const L = v[i].distanceTo(v[i+1]); seg.push(L); total += L; cum.push(total);
   }
-  return {v, seg, cum, total};
+  // lane offset that keeps vehicles on the deck: one-way carriageways carry both lanes the same way
+  const w = info ? info.w : 14, oneway = !!(info && info.oneway);
+  return {v, seg, cum, total, oneway, lane: oneway ? Math.max(0.6, w / 4) : Math.min(3.5, w / 4)};
 }).filter(p => p.total > 120);
 
 // sample a path at t (0..1) using binary search over cumulative lengths
@@ -815,8 +832,8 @@ function posOnPath(path, t, out){
 
 for (let i = 0; i < MAX_CARS && roadPaths.length; i++){
   const path = roadPaths[i % roadPaths.length];
-  const dir = (i % 2) * 2 - 1; // both directions
-  const offset = (i % 4 < 2 ? 3.5 : -3.5);
+  const dir = path.oneway ? 1 : (i % 2) * 2 - 1; // both directions unless one-way
+  const offset = (i % 4 < 2 ? 1 : -1) * (path.oneway ? path.lane : path.lane);
   cars.push({path, t: Math.random(), speed: (16 + Math.random()*14) / Math.max(200, path.total), dir, offset, ci: i % carColors.length});
   bodyInst.setColorAt(i, new THREE.Color(carColors[cars[i].ci]));
 }
@@ -836,7 +853,7 @@ function updateCars(dt){
     const lane = c.offset * (c.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (c.dir < 0 ? Math.PI : 0);
-    _M.makeRotationY(r); _M.setPosition(x, 0.22 + groundAt(x, z), z);
+    _M.makeRotationY(r); _M.setPosition(x, _p.y + groundAt(x, z), z);
     bodyInst.setMatrixAt(i, _M);
     glassInst.setMatrixAt(i, _M);
     wheelInst.setMatrixAt(i, _M);
@@ -1005,8 +1022,8 @@ const buses = [];
   const busColors = [0xd7263d, 0x2e86de, 0xf0c419, 0xd7263d]; // RapidKL red/blue/yellow
   for (let i = 0; i < 30 && roadPaths.length; i++){
     const path = roadPaths[(i * 7) % roadPaths.length];
-    const dir = (i % 2) * 2 - 1;
-    const offset = (i % 4 < 2 ? 4.2 : -4.2);
+    const dir = path.oneway ? 1 : (i % 2) * 2 - 1;
+    const offset = (i % 4 < 2 ? 1 : -1) * path.lane;
     buses.push({path, t: Math.random(), speed: (11 + Math.random()*4) / Math.max(200, path.total), dir, offset, ci: i % busColors.length});
     busInst.setColorAt(i, new THREE.Color(busColors[buses[i].ci]));
   }
@@ -1025,7 +1042,7 @@ function updateBuses(dt){
     const lane = b.offset * (b.dir < 0 ? -1 : 1);
     const x = _p.x - dz/L*lane, z = _p.z + dx/L*lane;
     const r = Math.atan2(-dx, -dz) + (b.dir < 0 ? Math.PI : 0);
-    _bM.makeRotationY(r); _bM.setPosition(x, 0.22 + 1.33 + groundAt(x, z), z);
+    _bM.makeRotationY(r); _bM.setPosition(x, _p.y + 1.33 + groundAt(x, z), z);
     busInst.setMatrixAt(i, _bM);
     b.t = (b.t + b.speed * dt) % 1;
   }

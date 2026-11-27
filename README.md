@@ -57,6 +57,20 @@ python pbf_to_scene.py
 
 Edit `BBOX` in `pbf_to_scene.py` to cover a different area.
 
+Two more generated layers sit on top of the scene:
+
+```
+python tools/make_roads3d.py   # data/kl_roads.json: bridges, stacked flyovers, ramps, tunnels
+pip install tifffile imagecodecs
+python tools/make_terrain.py   # data/kl_terrain.*: bare ground from the Copernicus GLO-30 DEM
+```
+
+`make_roads3d.py` reads each highway's OSM `bridge`, `layer` and `tunnel` tags. A deck that
+crosses a lower road or railway sits at layer x 6.5 m; heights then spread along the connected
+network at a 5.5 % grade, so approach ramps and links between stacked decks climb like the real
+ones. The page draws the decks with soffits, parapets, embankments and piers, hides tunnels and
+runs traffic on the right level.
+
 ## Project layout
 
 | Path | Purpose |
@@ -65,6 +79,9 @@ Edit `BBOX` in `pbf_to_scene.py` to cover a different area.
 | `pbf_to_scene.py` | OSM PBF → binary scene converter |
 | `osm_to_scene.py` | legacy Overpass-JSON converter (reference only) |
 | `server.js` | static server (`npm start`, `--lan` for phone) |
+| `landmarks/` | detailed landmark models (Petronas, KL Tower, Merdeka 118, Dataran Merdeka, Masjid Jamek, Exchange 106) |
+| `roads/roads3d.js` | elevated roads, ramps and piers from `data/kl_roads.json` |
+| `tools/` | `make_roads3d.py`, `make_terrain.py` |
 | `data/kl_scene.bin` | generated triangle data (~21 MB, not in git) |
 | `data/kl_scene_meta.json` | generated offsets + polylines (not in git) |
 | `data/kl_scene.json` | legacy scene (~66 MB, in git, fallback) |
